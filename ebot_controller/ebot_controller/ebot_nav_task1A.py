@@ -25,8 +25,8 @@ def normalize_angle(angle):
     return angle
 
 class EbotNavigator(Node):
-    def _init_(self):
-        super()._init_('ebot_nav')
+    def __init__(self):
+        super().__init__('ebot_nav')
 
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -250,5 +250,5 @@ def main(args=None):
             node.destroy_node()
             rclpy.try_shutdown()
 
-if _name_ == '_main_':
+if __name__ == '__main__':
     main()
