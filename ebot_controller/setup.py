@@ -14,13 +14,14 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'numpy', 'opencv-python'],
     zip_safe=True,
     maintainer='bhaveshk01',
     maintainer_email='bhaveshk01@todo.todo',
     description='TODO: Package description',
     license='TODO: License declaration',
     tests_require=['pytest'],
+    # Inside the setup() function in setup.py
     entry_points={
         'console_scripts': [
             'ebot_nav_task1A = ebot_controller.ebot_nav_task1A:main',
