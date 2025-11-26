@@ -23,8 +23,9 @@ endif()
 
 # Install Python scripts
 install(PROGRAMS
-    src/task1b_boiler_plate.py
+    src/task3a_perception.py
     DESTINATION lib/${PROJECT_NAME}
+    RENAME task3a_perception
 )
 install(PROGRAMS
     src/bonus_task2_boiler_plate.py

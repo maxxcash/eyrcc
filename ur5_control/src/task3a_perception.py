@@ -175,11 +175,13 @@ class Detection(Node):
         hsv = cv2.cvtColor(detection_region, cv2.COLOR_BGR2HSV)
 
         # Color thresholds
-        lower_grey, upper_grey = np.array([0, 0, 80]), np.array([180, 40, 160])
-        lower_green, upper_green = np.array([36, 25, 25]), np.array([86, 255, 255])
+        fruit_lower = np.array([60, 90, 100])
+        fruit_upper = np.array([70, 100, 200])
+        fruit_top_lower = np.array([35, 40, 80])
+        fruit_top_upper = np.array([85, 255, 255])
 
-        grey_mask = cv2.inRange(hsv, lower_grey, upper_grey)
-        green_mask = cv2.inRange(hsv, lower_green, upper_green)
+        grey_mask = cv2.inRange(hsv, fruit_lower, fruit_upper)
+        green_mask = cv2.inRange(hsv, fruit_top_lower, fruit_top_upper)
 
         grey_contours, _ = cv2.findContours(grey_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         green_contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
