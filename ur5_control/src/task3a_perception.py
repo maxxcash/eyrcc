@@ -334,24 +334,38 @@ class ArucoTF(Node):
         super().__init__('aruco_tf_publisher')             
         self.color_cam_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.colorimagecb, 10)
         self.depth_cam_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depthimagecb, 10)
-
+        self.camera_info_sub = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
         self.cv_image = None                                                            # colour raw image variable (from colorimagecb())
         self.depth_image = None                                                          # depth raw image variable (from depthimagecb())
         self.bridge = CvBridge()                                                       # OpenCV <-> ROS Image message converter
 
 
-        self.fx, self.fy = 915.30, 914.03   # Focal lengths
-        self.cx, self.cy = 642.72, 361.97   # Principal points
-
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+    
 
+    def camera_info_callback(self, msg: CameraInfo):
+            '''
+            Purpose:
+                Update camera intrinsics from CameraInfo topic.
+
+            Input Arguments:
+                msg : CameraInfo
+                    Contains intrinsic calibration parameters of the camera.
+
+            Returns:
+                None
+            '''
+            self.fx = msg.k[0]
+            self.fy = msg.k[4]
+            self.cx = msg.k[2]
+            self.cy = msg.k[5]
 
     def colorimagecb(self, msg: Image):
         try:
             self.cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            # cv2.imshow("RGB Image", self.cv_image)
+            cv2.imshow("RGB Image", self.cv_image)
 
             if self.depth_image is not None:
                 self.aruco_detection(self.cv_image, self.depth_image)
@@ -458,7 +472,7 @@ class ArucoTF(Node):
                     aruco_info.append(aruco_data)
                     self.aruco_publish_tf(aruco_data)
                     self.republish_aruco_in_base(aruco_data)
-            # cv2.imshow("Aruco Detection", output)
+            cv2.imshow("Aruco Detection", output)
             cv2.waitKey(1)
 
         return aruco_info
