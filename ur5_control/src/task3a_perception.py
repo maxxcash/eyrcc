@@ -518,7 +518,7 @@ class ArucoTF(Node):
                 t = TransformStamped()
                 t.header.stamp = self.get_clock().now().to_msg()
                 t.header.frame_id = "base_link"
-                t.child_frame_id = f"{teamid}_fertiliser_can_1"
+                t.child_frame_id = f"{teamid}_fertiliser_1"
                 t.transform.translation = trans.transform.translation
 
                 qx, qy, qz, qw = quaternion_from_euler(1.571, 3.14, 0.0)
