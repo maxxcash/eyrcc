@@ -72,9 +72,9 @@ class Detection(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # Topics
-        self.rgb_topic = '/camera/camera/color/image_raw'
-        self.depth_topic = '/camera/camera/aligned_depth_to_color/image_raw'
-        self.caminfo_topic = '/camera/camera/color/camera_info'
+        self.rgb_topic = '/camera/image_raw'
+        self.depth_topic = '/camera/depth/image_raw'
+        self.caminfo_topic = '/camera/camera_info'
 
         # Subscriptions
         self.rgb_sub = self.create_subscription(Image, self.rgb_topic, self.image_callback, 10)
@@ -175,13 +175,11 @@ class Detection(Node):
         hsv = cv2.cvtColor(detection_region, cv2.COLOR_BGR2HSV)
 
         # Color thresholds
-        fruit_lower = np.array([60, 90, 100])
-        fruit_upper = np.array([70, 100, 200])
-        fruit_top_lower = np.array([35, 40, 80])
-        fruit_top_upper = np.array([85, 255, 255])
+        lower_grey, upper_grey = np.array([0, 0, 80]), np.array([180, 40, 160])
+        lower_green, upper_green = np.array([36, 25, 25]), np.array([86, 255, 255])
 
-        grey_mask = cv2.inRange(hsv, fruit_lower, fruit_upper)
-        green_mask = cv2.inRange(hsv, fruit_top_lower, fruit_top_upper)
+        grey_mask = cv2.inRange(hsv, lower_grey, upper_grey)
+        green_mask = cv2.inRange(hsv, lower_green, upper_green)
 
         grey_contours, _ = cv2.findContours(grey_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         green_contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -331,137 +329,146 @@ class Detection(Node):
 class ArucoTF(Node):
 
     def __init__(self):
-        super().__init__('aruco_tf_publisher')             
-        self.color_cam_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.colorimagecb, 10)
-        self.depth_cam_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depthimagecb, 10)
-        self.camera_info_sub = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
-        self.cv_image = None                                                            # colour raw image variable (from colorimagecb())
-        self.depth_image = None                                                          # depth raw image variable (from depthimagecb())
-        self.bridge = CvBridge()                                                       # OpenCV <-> ROS Image message converter
+        super().__init__('aruco_tf_publisher')
 
+        # Image subscribers
+        self.color_cam_sub = self.create_subscription(
+            Image, '/camera/image_raw', self.colorimagecb, 10)
+        self.depth_cam_sub = self.create_subscription(
+            Image, '/camera/depth/image_raw', self.depthimagecb, 10)
 
+        # NEW: CameraInfo subscriber
+        self.caminfo_sub = self.create_subscription(
+            CameraInfo, "/camera/camera_info", self.camerainfocb, 10)
+
+        # Storage
+        self.cv_image = None
+        self.depth_image = None
+        self.bridge = CvBridge()
+
+        # Camera parameters (filled once CameraInfo arrives)
+        self.cam_mat = None
+        self.dist_mat = None
+
+        self.fx = None
+        self.fy = None
+        self.cx = None
+        self.cy = None
+
+        # TF tools
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
-    
 
-    def camera_info_callback(self, msg: CameraInfo):
-            '''
-            Purpose:
-                Update camera intrinsics from CameraInfo topic.
 
-            Input Arguments:
-                msg : CameraInfo
-                    Contains intrinsic calibration parameters of the camera.
+    # ------------------------------------------------------------
+    # CAMERA INFO CALLBACK (fills intrinsics automatically)
+    # ------------------------------------------------------------
+    def camerainfocb(self, msg: CameraInfo):
 
-            Returns:
-                None
-            '''
-            self.fx = msg.k[0]
-            self.fy = msg.k[4]
-            self.cx = msg.k[2]
-            self.cy = msg.k[5]
+        self.cam_mat = np.array(msg.k).reshape(3, 3)
+        self.dist_mat = np.array(msg.d)
 
+        self.fx = msg.k[0]
+        self.fy = msg.k[4]
+        self.cx = msg.k[2]
+        self.cy = msg.k[5]
+
+        # Only print once
+        if not hasattr(self, "printed_caminfo"):
+            self.printed_caminfo = True
+            self.get_logger().info(f"Camera intrinsics loaded:\nK=\n{self.cam_mat}\nD={self.dist_mat}")
+
+
+    # ------------------------------------------------------------
+    # RGB CALLBACK
+    # ------------------------------------------------------------
     def colorimagecb(self, msg: Image):
         try:
             self.cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            cv2.imshow("RGB Image", self.cv_image)
 
-            if self.depth_image is not None:
+            # Only run if depth + camera intrinsics are available
+            if self.depth_image is not None and self.cam_mat is not None:
                 self.aruco_detection(self.cv_image, self.depth_image)
 
             cv2.waitKey(1)
         except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge Error in image_callback: {e}")
+            self.get_logger().error(f"CV Bridge Error (RGB): {e}")
 
 
+    # ------------------------------------------------------------
+    # DEPTH CALLBACK
+    # ------------------------------------------------------------
     def depthimagecb(self, msg: Image):
         try:
             self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-
-            depth_display = cv2.normalize(self.depth_image, None, 0, 255, cv2.NORM_MINMAX)
-            depth_display = depth_display.astype('uint8')
-
-            # cv2.imshow("Depth Image", depth_display)
             cv2.waitKey(1)
         except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge Error in depth_callback: {e}")
+            self.get_logger().error(f"CV Bridge Error (Depth): {e}")
 
 
-
+    # ------------------------------------------------------------
+    # ARUCO DETECTION (now using live camera parameters)
+    # ------------------------------------------------------------
     def aruco_detection(self, rgb_image, depth_image):
+
+        if self.cam_mat is None:
+            self.get_logger().warn("CameraInfo not received yet!")
+            return []
+
         aruco_area_threshold = 1500
-        cam_mat = np.array([[915.3003540039062, 0.0, 642.724365234375],
-                            [0.0, 914.0320434570312, 361.9780578613281],
-                            [0.0, 0.0, 1.0]])
-        dist_mat = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
         size_of_aruco_m = 0.13
 
         output = rgb_image.copy()
         gray = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        parameters = cv2.aruco.DetectorParameters()
-
+        parameters = cv2.aruco.DetectorParameters_create()
         corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
 
         aruco_info = []
 
         if ids is not None:
-            aruco.drawDetectedMarkers(output, corners, ids)
+            cv2.aruco.drawDetectedMarkers(output, corners, ids)
+
             for i, marker_corner in enumerate(corners):
                 marker_id = ids[i][0]
                 area, width = self.calculate_rectangle_area(marker_corner)
 
                 if area > aruco_area_threshold:
-                    # Center calculation
-                    pts = marker_corner[0]
-                    M = cv2.moments(pts)
-                    if M["m00"] != 0:
-                        center_x = int(M["m10"] / M["m00"])
-                        center_y = int(M["m01"] / M["m00"])
-                    else:
-                        center_x = int(np.mean(pts[:, 0]))
-                        center_y = int(np.mean(pts[:, 1]))
 
-                    # Depth at center (safe indexing + median filter)
-                    y_start, y_end = max(0, center_y - 2), min(depth_image.shape[0], center_y + 3)
-                    x_start, x_end = max(0, center_x - 2), min(depth_image.shape[1], center_x + 3)
-                    depth_window = depth_image[y_start:y_end, x_start:x_end]
+                    # Corner-based center (your version)
+                    pts = marker_corner[0]
+                    cx_center = int(np.mean(pts[:, 0]))
+                    cy_center = int(np.mean(pts[:, 1]))
+
+                    # Depth median window
+                    y1, y2 = max(0, cy_center - 2), min(depth_image.shape[0], cy_center + 3)
+                    x1, x2 = max(0, cx_center - 2), min(depth_image.shape[1], cx_center + 3)
+                    depth_window = depth_image[y1:y2, x1:x2]
                     distance = float(np.median(depth_window).item())
 
-
-                    # Pose estimation
-                    rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
-                        marker_corner, size_of_aruco_m, cam_mat, dist_mat
+                    # Pose estimation using live calibration
+                    rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+                        marker_corner, size_of_aruco_m, self.cam_mat, self.dist_mat
                     )
-                    rvec, tvec = rvec[0], tvec[0]
 
-                    # Convert rotation to yaw angle
+                    rvec = rvecs[0]
+                    tvec = tvecs[0]
+
+                    # Yaw
                     r = R.from_rotvec(rvec.flatten())
                     yaw_angle_deg = float(r.as_euler('zyx', degrees=True)[0])
+                    angle_aruco = (0.788 * yaw_angle_deg) - ((yaw_angle_deg ** 2) / 3160)
 
-
-                    X = (center_x - self.cx) * distance / self.fx
-                    Y = (center_y - self.cy) * distance / self.fy
+                    # Convert depth pixel → camera 3D
+                    X = (cx_center - self.cx) * distance / self.fx
+                    Y = (cy_center - self.cy) * distance / self.fy
                     Z = distance
 
-                    angle_aruco = (0.788*yaw_angle_deg) - ((yaw_angle_deg**2)/3160)
-
-
-
-                    # Draw axis & annotations
-                    cv2.drawFrameAxes(output, cam_mat, dist_mat, rvec, tvec, size_of_aruco_m * 0.5)
-                    cv2.circle(output, (center_x, center_y), 5, (0, 255, 255), -1)
-                    # cv2.putText(
-                    #     output,
-                    #     f"Dist:{float(distance):.2f}m Yaw:{float(yaw_angle_deg):.1f}",
-                    #     (center_x, center_y),
-                    #     cv2.FONT_HERSHEY_SIMPLEX,
-                    #     0.5,
-                    #     (0, 255, 0),
-                    #     2
-                    # )
+                    # Draw
+                    cv2.drawFrameAxes(output, self.cam_mat, self.dist_mat, rvec, tvec, size_of_aruco_m * 0.5)
+                    cv2.circle(output, (cx_center, cy_center), 5, (0, 255, 255), -1)
 
                     aruco_data = {
                         "id": int(marker_id),
@@ -472,10 +479,9 @@ class ArucoTF(Node):
                     aruco_info.append(aruco_data)
                     self.aruco_publish_tf(aruco_data)
                     self.republish_aruco_in_base(aruco_data)
-            cv2.imshow("Aruco Detection", output)
-            cv2.waitKey(1)
 
         return aruco_info
+
 
     def calculate_rectangle_area(self, coordinates: np.ndarray) -> Tuple[float, float]:
         area = 0.0
@@ -518,7 +524,7 @@ class ArucoTF(Node):
                 t = TransformStamped()
                 t.header.stamp = self.get_clock().now().to_msg()
                 t.header.frame_id = "base_link"
-                t.child_frame_id = f"{teamid}_fertiliser_1"
+                t.child_frame_id = f"{teamid}_fertilizer_1"
                 t.transform.translation = trans.transform.translation
 
                 qx, qy, qz, qw = quaternion_from_euler(1.571, 3.14, 0.0)
