@@ -346,23 +346,27 @@ class ArucoTF(Node):
         self.depth_image = None
         self.bridge = CvBridge()
 
-        # Camera parameters (filled once CameraInfo arrives)
+        # Camera parameters (from CameraInfo)
         self.cam_mat = None
         self.dist_mat = None
-
         self.fx = None
         self.fy = None
         self.cx = None
         self.cy = None
 
-        # TF tools
+        # Setup TF
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
+        # NEW: Prepare ArUco detector (new OpenCV API)
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        self.aruco_params = cv2.aruco.DetectorParameters()
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+
 
     # ------------------------------------------------------------
-    # CAMERA INFO CALLBACK (fills intrinsics automatically)
+    # CAMERA INFO CALLBACK → load intrinsics dynamically
     # ------------------------------------------------------------
     def camerainfocb(self, msg: CameraInfo):
 
@@ -374,7 +378,6 @@ class ArucoTF(Node):
         self.cx = msg.k[2]
         self.cy = msg.k[5]
 
-        # Only print once
         if not hasattr(self, "printed_caminfo"):
             self.printed_caminfo = True
             self.get_logger().info(f"Camera intrinsics loaded:\nK=\n{self.cam_mat}\nD={self.dist_mat}")
@@ -385,15 +388,15 @@ class ArucoTF(Node):
     # ------------------------------------------------------------
     def colorimagecb(self, msg: Image):
         try:
-            self.cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            self.cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
 
-            # Only run if depth + camera intrinsics are available
             if self.depth_image is not None and self.cam_mat is not None:
                 self.aruco_detection(self.cv_image, self.depth_image)
 
             cv2.waitKey(1)
+
         except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge Error (RGB): {e}")
+            self.get_logger().error(f"RGB CV Bridge Error: {e}")
 
 
     # ------------------------------------------------------------
@@ -401,102 +404,107 @@ class ArucoTF(Node):
     # ------------------------------------------------------------
     def depthimagecb(self, msg: Image):
         try:
-            self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            cv2.waitKey(1)
+            self.depth_image = self.bridge.imgmsg_to_cv2(msg, 'passthrough')
         except CvBridgeError as e:
-            self.get_logger().error(f"CV Bridge Error (Depth): {e}")
+            self.get_logger().error(f"Depth CV Bridge Error: {e}")
 
 
     # ------------------------------------------------------------
-    # ARUCO DETECTION (now using live camera parameters)
+    # NEW ARUCO DETECTION (New API)
     # ------------------------------------------------------------
     def aruco_detection(self, rgb_image, depth_image):
 
         if self.cam_mat is None:
-            self.get_logger().warn("CameraInfo not received yet!")
             return []
 
         aruco_area_threshold = 1500
-        size_of_aruco_m = 0.13
+        size_of_aruco_m = 0.13  # marker size in meters
 
-        output = rgb_image.copy()
-        gray = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2GRAY)
 
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        parameters = cv2.aruco.DetectorParameters_create()
-        corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        # NEW OPENCV FORMAT
+        corners, ids, rejected = self.detector.detectMarkers(gray)
 
         aruco_info = []
 
         if ids is not None:
-            cv2.aruco.drawDetectedMarkers(output, corners, ids)
 
-            for i, marker_corner in enumerate(corners):
-                marker_id = ids[i][0]
-                area, width = self.calculate_rectangle_area(marker_corner)
+            cv2.aruco.drawDetectedMarkers(rgb_image, corners, ids)
+
+            for i, c in enumerate(corners):
+
+                marker_id = int(ids[i][0])
+
+                area, width = self.calculate_rectangle_area(c)
 
                 if area > aruco_area_threshold:
 
-                    # Corner-based center (your version)
-                    pts = marker_corner[0]
+                    # ------------------------
+                    # NEW center calculation
+                    # ------------------------
+                    pts = c[0]
                     cx_center = int(np.mean(pts[:, 0]))
                     cy_center = int(np.mean(pts[:, 1]))
 
-                    # Depth median window
+                    # Depth median filter
                     y1, y2 = max(0, cy_center - 2), min(depth_image.shape[0], cy_center + 3)
                     x1, x2 = max(0, cx_center - 2), min(depth_image.shape[1], cx_center + 3)
+
                     depth_window = depth_image[y1:y2, x1:x2]
                     distance = float(np.median(depth_window).item())
 
-                    # Pose estimation using live calibration
+                    # -------------------------------------
+                    # Pose estimation (still OLD API)
+                    # -------------------------------------
                     rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                        marker_corner, size_of_aruco_m, self.cam_mat, self.dist_mat
+                        [c], size_of_aruco_m, self.cam_mat, self.dist_mat
                     )
-
                     rvec = rvecs[0]
                     tvec = tvecs[0]
 
-                    # Yaw
+                    # Extract Yaw
                     r = R.from_rotvec(rvec.flatten())
                     yaw_angle_deg = float(r.as_euler('zyx', degrees=True)[0])
                     angle_aruco = (0.788 * yaw_angle_deg) - ((yaw_angle_deg ** 2) / 3160)
 
-                    # Convert depth pixel → camera 3D
+                    # Pixel → 3D camera frame
                     X = (cx_center - self.cx) * distance / self.fx
                     Y = (cy_center - self.cy) * distance / self.fy
                     Z = distance
 
-                    # Draw
-                    cv2.drawFrameAxes(output, self.cam_mat, self.dist_mat, rvec, tvec, size_of_aruco_m * 0.5)
-                    cv2.circle(output, (cx_center, cy_center), 5, (0, 255, 255), -1)
+                    # Draw axes
+                    cv2.drawFrameAxes(rgb_image, self.cam_mat, self.dist_mat, rvec, tvec, size_of_aruco_m * 0.5)
+                    cv2.circle(rgb_image, (cx_center, cy_center), 5, (0, 255, 255), -1)
 
+                    # Build output data
                     aruco_data = {
-                        "id": int(marker_id),
-                        "position": (Z, -X, -Y),
+                        "id": marker_id,
+                        "position": (Z, -X, -Y),  # camera → base conversion
                         "yaw": float(angle_aruco)
                     }
 
                     aruco_info.append(aruco_data)
+
                     self.aruco_publish_tf(aruco_data)
                     self.republish_aruco_in_base(aruco_data)
 
         return aruco_info
 
 
+    # ------------------------------------------------------------
+    # Rectangle area (unchanged)
+    # ------------------------------------------------------------
     def calculate_rectangle_area(self, coordinates: np.ndarray) -> Tuple[float, float]:
-        area = 0.0
-        width = 0.0 
-        corners = coordinates.reshape(4, 2)
-        top_left = corners[0]
-        top_right = corners[1]
-        bottom_right = corners[2]
-        bottom_left = corners[3]
+
+        pts = coordinates.reshape(4, 2)
+        top_left = pts[0]
+        top_right = pts[1]
+        bottom_left = pts[3]
 
         width = np.linalg.norm(top_right - top_left)
         height = np.linalg.norm(top_left - bottom_left)
-        area = width * height
+        return width * height, width
 
-        return area, width
 
 
 
