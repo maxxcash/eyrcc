@@ -72,9 +72,9 @@ class Detection(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # Topics
-        self.rgb_topic = '/camera/image_raw'
-        self.depth_topic = '/camera/depth/image_raw'
-        self.caminfo_topic = '/camera/camera_info'
+        self.rgb_topic = '/camera/camera/color/image_raw'
+        self.depth_topic = '/camera/camera/aligned_depth_depth_to_color/image_raw'
+        self.caminfo_topic = '/camera/camera/camera_info'
 
         # Subscriptions
         self.rgb_sub = self.create_subscription(Image, self.rgb_topic, self.image_callback, 10)
@@ -333,13 +333,13 @@ class ArucoTF(Node):
 
         # Image subscribers
         self.color_cam_sub = self.create_subscription(
-            Image, '/camera/image_raw', self.colorimagecb, 10)
+            Image, '/camera/camera/color/image_raw', self.colorimagecb, 10)
         self.depth_cam_sub = self.create_subscription(
-            Image, '/camera/depth/image_raw', self.depthimagecb, 10)
+            Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depthimagecb, 10)
 
         # NEW: CameraInfo subscriber
         self.caminfo_sub = self.create_subscription(
-            CameraInfo, "/camera/camera_info", self.camerainfocb, 10)
+            CameraInfo, "/camera/camera/camera_info", self.camerainfocb, 10)
 
         # Storage
         self.cv_image = None
