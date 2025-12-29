@@ -122,7 +122,7 @@ class PlantDetectionNode(Node):
         # Map Config (Swapped Axes)
         self.ROW_SPLIT_Y = 0.0 
         self.X_BOUNDARIES = [
-            (, ), (-3.24, -2.24), (-1.88, -0.88), (-0.54, 0.46)    
+            (1.0, 1.6), (1.8, 2.4), (2.6, 3.2), (3.3, 3.9)    
         ]
         self.LIDAR_OFFSET_X = 0.4
         self.LIDAR_OFFSET_Y = 0.0 
