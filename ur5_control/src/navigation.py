@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -121,9 +120,9 @@ class PlantDetectionNode(Node):
         self.ALIGNMENT_TOLERANCE = 0.08  
         
         # Map Config (Swapped Axes)
-        self.ROW_SPLIT_X = -1.4 
-        self.Y_BOUNDARIES = [
-            (-4.58, -3.58), (-3.24, -2.24), (-1.88, -0.88), (-0.54, 0.46)    
+        self.ROW_SPLIT_Y = 0.0 
+        self.X_BOUNDARIES = [
+            (, ), (-3.24, -2.24), (-1.88, -0.88), (-0.54, 0.46)    
         ]
         self.LIDAR_OFFSET_X = 0.4
         self.LIDAR_OFFSET_Y = 0.0 
@@ -153,10 +152,10 @@ class PlantDetectionNode(Node):
         self.manage_sequence_and_publish(raw_objects)
 
     def identify_plant(self, gx, gy):
-        is_top_row = gx > self.ROW_SPLIT_X 
+        is_top_row = gy > self.ROW_SPLIT_Y 
         plant_col = -1
-        for idx, (y_min, y_max) in enumerate(self.Y_BOUNDARIES):
-            if y_min <= gy <= y_max:
+        for idx, (x_min, x_max) in enumerate(self.X_BOUNDARIES):
+            if x_min <= gx <= x_max:
                 plant_col = idx
                 break
         if plant_col == -1: return "0"
