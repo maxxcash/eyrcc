@@ -109,7 +109,7 @@ class PlantDetectionNode(Node):
         
         # --- CONFIGURATION ---
         self.TARGET_SEQUENCE = ["PENTAGON", "TRIANGLE", "TRIANGLE", "SQUARE"] 
-        self.RELEASE_TIMES = [15.0, 10.0, 20.0, 15.0, 10.0, 25.0] 
+        self.RELEASE_TIMES = [15.0, 10.0, 10.0, 15.0] 
         
         self.current_seq_idx = 0
         self.target_locked = False 
