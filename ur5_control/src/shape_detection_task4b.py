@@ -108,7 +108,7 @@ class PlantDetectionNode(Node):
         self.det = FeatureDetection()
         
         # --- CONFIGURATION ---
-        self.TARGET_SEQUENCE = ["PENTAGON", "SQUARE", "TRIANGLE", "TRIANGLE", "SQUARE", "TRIANGLE"] 
+        self.TARGET_SEQUENCE = ["PENTAGON", "TRIANGLE", "TRIANGLE", "SQUARE"] 
         self.RELEASE_TIMES = [15.0, 10.0, 20.0, 15.0, 10.0, 25.0] 
         
         self.current_seq_idx = 0
