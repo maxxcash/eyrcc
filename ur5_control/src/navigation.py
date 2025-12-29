@@ -2,250 +2,311 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from std_msgs.msg import String
+import numpy as np
 import math
 
-# -------------------------- WAYPOINTS ---------------------------
-WAYPOINTS = [      
-    (0.0, 0, 0.62),
-    (0.38, -1.65, 0.0), 
-    (4.6, -1.65, 0.0),          
-    (4.6,  1.6, -1.571),      
-    (0.0,  1.6, -3.14),    
-    (0, 0, 0.0),  
-    (4.6, 0.0, 0.0),
-
-]
-
-FINAL_REVERSE_Y_TARGET = 0.0  
-
-# ------------------------ TUNING PARAMETERS -----------------------
-STOP_DURATION = 2.0         # How long to wait in Sim Seconds
-
-# Standard Nav Constants
-POSE_TOL = 0.05
-YAW_TOL = math.radians(15)  
-START_DRIVE_ANGLE = math.radians(15) 
-HOLD_TIME = 0.4
-LOOP_HZ = 30.0
-KP_LIN = 1.1; KP_ANG = 1.5   
-MAX_LIN = 0.5; MAX_ANG = 1.0
-MAX_LIN_ACCEL = 0.8; MAX_ANG_ACCEL = 3.0
-MIN_LIN = 0.08; MIN_ANG = 0.15  
-ALPHA = 0.55
-
-def q_to_yaw(q): 
-    return math.atan2(2*(q.w*q.z + q.x*q.y), 1 - 2*(q.y*q.y + q.z*q.z))
-
-def normalize(a):
-    while a > math.pi: a -= 2*math.pi
-    while a < -math.pi: a += 2*math.pi
-    return a
-
-def clamp(x, a, b):
-    return max(a, min(b, x))
-
-class WaypointNav(Node):
-
+# ==============================================================================
+# 1. OPTIMIZED FEATURE EXTRACTOR
+# ==============================================================================
+class FeatureDetection:
     def __init__(self):
-        super().__init__("ebot_nav_exact_stop")
+        self.DETECTION_RADIUS = 0.9  
+        self.DELTA = 0.02       
+        self.EPSILON = 0.05     
+        self.MAX_SEGMENT_LEN = 1.0 
+        self.SNUM = 15           
+        self.P_MIN = 5          
+        self.SMOOTHING_WIN = 10 
+        
+    def apply_smoothing(self, x, y, window_size=10):
+        if len(x) < window_size: return x, y
+        kernel = np.ones(window_size) / window_size
+        x_smooth = np.convolve(x, kernel, mode='same')
+        y_smooth = np.convolve(y, kernel, mode='same')
+        dist = np.hypot(x - x_smooth, y - y_smooth)
+        mask = dist > 0.10
+        x_final = np.where(mask, x, x_smooth)
+        y_final = np.where(mask, y, y_smooth)
+        return x_final, y_final
+
+    def laser_points_set(self, data):
+        ranges = np.array(data.ranges)
+        angles = np.linspace(data.angle_min, data.angle_max, len(ranges))
+        deg_angles = np.degrees(angles)
+        angle_mask = ((deg_angles >= -90) & (deg_angles <= -45)) | \
+                     ((deg_angles >= 45) & (deg_angles <= 90))
+        max_dist = min(data.range_max, self.DETECTION_RADIUS)
+        range_mask = (ranges < max_dist) & (ranges > data.range_min)
+        valid = angle_mask & range_mask
+        x = ranges[valid] * np.cos(angles[valid])
+        y = ranges[valid] * np.sin(angles[valid])
+        if len(x) > 5: x, y = self.apply_smoothing(x, y, self.SMOOTHING_WIN)
+        return np.vstack((x, y))
+
+    def dist_point_to_line(self, points, line_params):
+        nx, ny, C = line_params
+        return np.abs(nx * points[0] + ny * points[1] + C)
+
+    def fast_fit(self, x, y):
+        mean_x = np.mean(x); mean_y = np.mean(y)
+        data = np.vstack((x - mean_x, y - mean_y))
+        try:
+            cov = np.cov(data)
+            vals, vecs = np.linalg.eigh(cov)
+            nx, ny = vecs[:, 0]
+            C = -(nx * mean_x + ny * mean_y)
+            return nx, ny, C
+        except: return 0, 0, 0
+
+    def detect_lines(self, points):
+        lines = []
+        num = points.shape[1]
+        if num < self.P_MIN: return []
+        i = 0
+        while i < num - self.SNUM:
+            seed_indices = slice(i, i + self.SNUM)
+            seed_pts = points[:, seed_indices]
+            params = self.fast_fit(seed_pts[0], seed_pts[1])
+            if params[0] == 0: i += 1; continue
+            if np.any(self.dist_point_to_line(seed_pts, params) > self.DELTA): i += 1; continue
+            j = i + self.SNUM
+            line_end_idx = j
+            while j < num:
+                pt = points[:, j:j+1]
+                if self.dist_point_to_line(pt, params) < self.DELTA: line_end_idx = j; j += 1
+                else: break
+            if (line_end_idx - i) >= self.P_MIN:
+                final_pts = points[:, i:line_end_idx]
+                p_start = (final_pts[0, 0], final_pts[1, 0])
+                p_end = (final_pts[0, -1], final_pts[1, -1])
+                length = math.hypot(p_end[0]-p_start[0], p_end[1]-p_start[1])
+                if length > self.EPSILON and length < self.MAX_SEGMENT_LEN:
+                    lines.append((p_start, p_end))
+                    i = line_end_idx
+                else: i = line_end_idx 
+            else: i += 1
+        return lines
+
+# ==============================================================================
+# 2. PLANT & SHAPE DETECTOR NODE (CLEAN LOGS)
+# ==============================================================================
+class PlantDetectionNode(Node):
+    def __init__(self):
+        super().__init__('plant_detection_node')
         
         self.set_parameters([Parameter("use_sim_time", Parameter.Type.BOOL, True)])
-
-        self.sub_odom = self.create_subscription(Odometry, "/odom", self.cb_odom, 10)
-        self.sub_scan = self.create_subscription(LaserScan, "/scan", self.cb_scan, 10)
-        self.sub_detection = self.create_subscription(String, "/detection_status", self.cb_detection, 10)
-        self.pub_cmd  = self.create_publisher(Twist, "/cmd_vel", 10)
         
-        self.timer = self.create_timer(1.0 / LOOP_HZ, self.loop)
-
-        # Robot State
-        self.x = None; self.y = None; self.yaw = None
-        self.pose_ready = False
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+        qos_policy = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
         
-        # Navigation State
-        self.wi = 0
-        self.state = "ROTATE"
-        self.hold_start = None
-        self.prev_lin_cmd = 0.0
-        self.prev_ang_cmd = 0.0
-        self.last_yaw_err = 0.0
-        self.scan = []
+        self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_cb, qos_policy)
+        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
+        self.pub_status = self.create_publisher(String, '/detection_status', 10)
         
-        # --- ALIGNMENT STATE ---
-        self.target_y = None       
-        self.target_label = ""     
-        self.stop_condition = 0    # 1 for (>=), -1 for (<=)
+        self.det = FeatureDetection()
         
-        self.is_paused = False           
-        self.pause_start_time = 0.0
-
-        self.last_time = self.time_now()
-        self.get_logger().info("Nav Started. Priority: EXACT Crossover Stop.")
-
-    def time_now(self):
-        t = self.get_clock().now()
-        s, ns = t.seconds_nanoseconds()
-        return s + ns*1e-9
-
-    # ----------------------------- DETECTION LOGIC -----------------------------
-    def cb_detection(self, msg):
-        data = msg.data
+        # --- CONFIGURATION ---
+        self.TARGET_SEQUENCE = ["PENTAGON", "SQUARE", "TRIANGLE", "TRIANGLE", "SQUARE", "TRIANGLE"] 
+        self.RELEASE_TIMES = [15.0, 10.0, 20.0, 15.0, 10.0, 25.0] 
         
-        # Ignore if busy
-        if self.is_paused or self.target_y is not None: 
-            return
+        self.current_seq_idx = 0
+        self.target_locked = False 
+        self.published_count = 0
+        self.lock_time = None
+        self.stored_shape_data = None    
+        
+        self.ALIGNMENT_TOLERANCE = 0.08  
+        
+        # Map Config (Swapped Axes)
+        self.ROW_SPLIT_X = -1.4 
+        self.Y_BOUNDARIES = [
+            (-4.58, -3.58), (-3.24, -2.24), (-1.88, -0.88), (-0.54, 0.46)    
+        ]
+        self.LIDAR_OFFSET_X = 0.4
+        self.LIDAR_OFFSET_Y = 0.0 
+        self.robot_pose = None
+        self.frame_count = 0 
+        
+        self.get_logger().info(f"Detector Initialized. Sequence Length: {len(self.TARGET_SEQUENCE)}")
 
-        try:
-            parts = data.split(',')
-            if len(parts) >= 3:
-                label = parts[0].strip()
-                detected_y = float(parts[2])  
-                
-                valid_triggers = ["DOCK", "FERT", "BAD", "bad", "dock", "fert"]
-                
-                if any(x in label for x in valid_triggers):
-                    self.target_y = detected_y
-                    self.target_label = label
+    def odom_cb(self, msg):
+        pos = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        self.robot_pose = (pos.x, pos.y, yaw)
+
+    def scan_cb(self, msg):
+        self.frame_count += 1
+        if self.frame_count % 2 != 0 or self.robot_pose is None: return
+
+        pc = self.det.laser_points_set(msg)
+        lines = []
+        if pc.shape[1] > 0:
+            lines = self.det.detect_lines(pc)
+        
+        raw_objects = self.classify_objects(lines)
+        self.manage_sequence_and_publish(raw_objects)
+
+    def identify_plant(self, gx, gy):
+        is_top_row = gx > self.ROW_SPLIT_X 
+        plant_col = -1
+        for idx, (y_min, y_max) in enumerate(self.Y_BOUNDARIES):
+            if y_min <= gy <= y_max:
+                plant_col = idx
+                break
+        if plant_col == -1: return "0"
+        return str(plant_col + 1) if is_top_row else str(plant_col + 5)
+
+    def manage_sequence_and_publish(self, detected_objects):
+        if self.current_seq_idx >= len(self.TARGET_SEQUENCE): return
+
+        target_shape = self.TARGET_SEQUENCE[self.current_seq_idx]
+        try: current_release_time = self.RELEASE_TIMES[self.current_seq_idx]
+        except IndexError: current_release_time = 15.0
+
+        # --- STEP 1: LATCH ONTO FIRST SIGHTING ---
+        if self.stored_shape_data is None:
+            for name, local_pos, (gx, gy), color, dist in detected_objects:
+                if target_shape in name:
+                    plant_id = self.identify_plant(gx, gy)
+                    label = "UNKNOWN"
+                    if "SQUARE" in name: label = "BAD_HEALTH"
+                    elif "TRIANGLE" in name: label = "FERTILIZER_REQUIRED"
+                    elif "PENTAGON" in name: label = "DOCK_STATION"
                     
-                    # --- DETERMINE DIRECTION ---
-                    # If target is greater than current Y, we are moving UP (+). 
-                    # We stop when y >= target.
-                    if self.target_y > self.y:
-                        self.stop_condition = 1 # Moving UP
-                        direction_str = "UP (Stopping when Y >= Target)"
-                    else:
-                        self.stop_condition = -1 # Moving DOWN
-                        direction_str = "DOWN (Stopping when Y <= Target)"
-                    
-                    self.get_logger().info(f"CAPTURED: {label} at {self.target_y:.3f}")
-                    self.get_logger().info(f" >> Mode: {direction_str}")
+                    self.stored_shape_data = {
+                        'gx': gx, 'gy': gy, 'plant_id': plant_id, 'label': label
+                    }
+                    self.get_logger().info(f"VISUAL CONTACT: {target_shape} at X={gx:.2f}. Waiting for alignment...")
+                    break 
 
-        except ValueError:
-            pass
-
-    # ----------------------------- ODOM & SCAN -----------------------------
-    def cb_odom(self, msg):
-        px = msg.pose.pose.position.x
-        py = msg.pose.pose.position.y
-        pyaw = q_to_yaw(msg.pose.pose.orientation)
-        if not self.pose_ready:
-            self.x, self.y, self.yaw = px, py, pyaw
-            self.pose_ready = True
-        else:
-            self.x = ALPHA*self.x + (1-ALPHA)*px
-            self.y = ALPHA*self.y + (1-ALPHA)*py
-            self.yaw = normalize(self.yaw + (1-ALPHA)*normalize(pyaw - self.yaw))
-
-    def cb_scan(self, m): self.scan = list(m.ranges)
-
-    # ----------------------------- MAIN LOOP -----------------------------
-    def loop(self):
-        if not self.pose_ready: return
-
-        now = self.time_now()
-        dt = now - self.last_time
-        if dt <= 0: dt = 1.0/LOOP_HZ 
-        self.last_time = now
-
-        # --- 1. HANDLE PAUSE ---
-        if self.is_paused:
-            self.stop()
-            if (now - self.pause_start_time) >= STOP_DURATION:
-                self.get_logger().info(f"Finished stop for {self.target_label}. Resuming.")
-                self.is_paused = False
-                self.target_y = None  
-            return 
-
-        # --- 2. EXACT CROSSOVER CHECK ---
-        if self.target_y is not None:
-            should_stop = False
+        # --- STEP 2: CHECK ALIGNMENT ---
+        if self.stored_shape_data is not None and not self.target_locked:
+            rx, ry, _ = self.robot_pose
+            shape_x = self.stored_shape_data['gx']
+            x_diff = abs(rx - shape_x)
             
-            # If moving UP, stop if current Y is greater or equal
-            if self.stop_condition == 1 and self.y >= self.target_y:
-                should_stop = True
+            if x_diff < self.ALIGNMENT_TOLERANCE:
+                if self.published_count < 1:
+                    label = self.stored_shape_data['label']
+                    plant_id = self.stored_shape_data['plant_id']
+                    
+                    msg = String()
+                    data_str = f"{label},{shape_x:.2f},{ry:.2f},{plant_id}"
+                    msg.data = data_str
+                    self.pub_status.publish(msg)
+                    
+                    self.get_logger().info(f"ALIGNED -> PUBLISHED: {data_str}")
+                    self.published_count += 1
+                    
+                    self.target_locked = True
+                    self.lock_time = self.get_clock().now()
+
+        # --- STEP 3: COOLDOWN & NEXT TASK ---
+        if self.target_locked:
+            elapsed = (self.get_clock().now() - self.lock_time).nanoseconds * 1e-9
+            if elapsed > current_release_time:
+                self.get_logger().info(f"TASK COMPLETE ({target_shape}). Scanning for next target...")
+                self.current_seq_idx += 1
+                self.target_locked = False
+                self.lock_time = None
+                self.published_count = 0 
+                self.stored_shape_data = None 
+
+    def get_global_coords(self, local_x, local_y):
+        rx, ry, theta = self.robot_pose
+        base_x = local_x + self.LIDAR_OFFSET_X
+        base_y = local_y + self.LIDAR_OFFSET_Y
+        gx = rx + (base_x * math.cos(theta) - base_y * math.sin(theta))
+        gy = ry + (base_x * math.sin(theta) + base_y * math.cos(theta))
+        return gx, gy
+
+    def get_line_intersection(self, p1, p2, p3, p4):
+        x1, y1 = p1; x2, y2 = p2; x3, y3 = p3; x4, y4 = p4
+        denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1)
+        if denom == 0: return None
+        ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom
+        return (x1 + ua * (x2 - x1), y1 + ua * (y2 - y1))
+
+    def get_angle(self, v1, v2):
+        dot = v1[0]*v2[0] + v1[1]*v2[1]
+        det = v1[0]*v2[1] - v1[1]*v2[0]
+        angle = math.atan2(det, dot) 
+        deg = abs(math.degrees(angle))
+        if deg > 180: deg = 360 - deg
+        return deg
+
+    def classify_objects(self, lines):
+        detected_objects = []
+        potential_corners = []
+
+        for i in range(len(lines)):
+            for j in range(i + 1, len(lines)):
+                l1_start, l1_end = lines[i]
+                l2_start, l2_end = lines[j]
                 
-            # If moving DOWN, stop if current Y is less or equal
-            elif self.stop_condition == -1 and self.y <= self.target_y:
-                should_stop = True
+                intersection = self.get_line_intersection(l1_start, l1_end, l2_start, l2_end)
+                if intersection is None: continue
+                cx, cy = intersection
 
-            if should_stop:
-                self.get_logger().warn(f"STOP! Robot:{self.y:.4f} crossed Target:{self.target_y:.4f}")
-                self.stop()
-                self.is_paused = True
-                self.pause_start_time = now
-                return
+                dist_l1 = min(math.hypot(cx-l1_start[0], cy-l1_start[1]), math.hypot(cx-l1_end[0], cy-l1_end[1]))
+                dist_l2 = min(math.hypot(cx-l2_start[0], cy-l2_start[1]), math.hypot(cx-l2_end[0], cy-l2_end[1]))
+                
+                if dist_l1 < 0.3 and dist_l2 < 0.3:
+                    v1 = (l1_end[0] - l1_start[0], l1_end[1] - l1_start[1])
+                    v2 = (l2_end[0] - l2_start[0], l2_end[1] - l2_start[1])
+                    angle = self.get_angle(v1, v2)
+                    if angle > 90: angle = 180 - angle 
 
-        # --- 3. STANDARD NAVIGATION ---
-        if self.wi >= len(WAYPOINTS):
-            self.state = "FINAL_REVERSE"
-            if self.y > FINAL_REVERSE_Y_TARGET:
-                self.cmd(self.ramp_linear(-0.50, dt), 0.0)
-                return
-            else:
-                self.stop()
-                rclpy.shutdown()
-                return
+                    name = "Unknown"
+                    if 75 <= angle <= 105: name = "SQUARE"
+                    elif 15 <= angle <= 50: name = "TRIANGLE"
+                        
+                    if name != "Unknown":
+                        potential_corners.append({'name': name, 'pos': (cx, cy), 'lines': {i, j}})
 
-        gx, gy, gyaw = WAYPOINTS[self.wi]
-        dx = gx - self.x; dy = gy - self.y
-        dist = math.hypot(dx, dy)
-        yaw_err = normalize(math.atan2(dy, dx) - self.yaw)
-        final_yaw_err = normalize(gyaw - self.yaw)
+        processed_indices = set()
+        for m in range(len(potential_corners)):
+            for n in range(m + 1, len(potential_corners)):
+                c1 = potential_corners[m]
+                c2 = potential_corners[n]
+                
+                if not c1['lines'].isdisjoint(c2['lines']):
+                    mid_x = (c1['pos'][0] + c2['pos'][0]) / 2
+                    mid_y = (c1['pos'][1] + c2['pos'][1]) / 2
+                    gx, gy = self.get_global_coords(mid_x, mid_y)
+                    dist = math.hypot(mid_x, mid_y)
+                    obj = None
+                    if c1['name'] == "SQUARE" and c2['name'] == "SQUARE":
+                        obj = ("SQUARE (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
+                    elif c1['name'] == "TRIANGLE" and c2['name'] == "TRIANGLE":
+                        obj = ("PENTAGON (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
+                    elif (c1['name'] == "SQUARE" and c2['name'] == "TRIANGLE") or \
+                         (c1['name'] == "TRIANGLE" and c2['name'] == "SQUARE"):
+                        obj = ("PENTAGON (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
+                    
+                    if obj:
+                        detected_objects.append(obj)
+                        processed_indices.add(m); processed_indices.add(n)
 
-        if self.state == "ROTATE":
-            if abs(yaw_err) > START_DRIVE_ANGLE:
-                ang = clamp(KP_ANG * yaw_err, -MAX_ANG, MAX_ANG)
-                if abs(ang) < MIN_ANG: ang = math.copysign(MIN_ANG, ang)
-                self.cmd(0, self.ramp_angular(ang, dt))
-            else:
-                self.stop(); self.state = "DRIVE"
+        for idx, c in enumerate(potential_corners):
+            if idx not in processed_indices:
+                if c['name'] == "TRIANGLE":
+                    gx, gy = self.get_global_coords(c['pos'][0], c['pos'][1])
+                    dist = math.hypot(c['pos'][0], c['pos'][1])
+                    detected_objects.append((c['name'], c['pos'], (gx, gy), (0, 0, 0), dist)) 
+        return detected_objects
 
-        elif self.state == "DRIVE":
-            if dist > POSE_TOL:
-                lin = clamp(KP_LIN * dist, MIN_LIN, MAX_LIN)
-                ang = clamp(lin * (2*math.sin(yaw_err))/0.6, -MAX_ANG, MAX_ANG)
-                self.cmd(self.ramp_linear(lin, dt), self.ramp_angular(ang, dt))
-                self.last_yaw_err = final_yaw_err
-            else:
-                self.stop(); self.state = "ALIGN"
-
-        elif self.state == "ALIGN":
-            if abs(final_yaw_err) > YAW_TOL:
-                rate = (final_yaw_err - self.last_yaw_err) / dt
-                ang = clamp(KP_ANG * final_yaw_err + 0.1 * rate, -MAX_ANG, MAX_ANG)
-                if abs(ang) < MIN_ANG: ang = math.copysign(MIN_ANG, ang)
-                self.cmd(0, ang)
-                self.last_yaw_err = final_yaw_err
-            else:
-                self.stop(); self.hold_start = now; self.state = "HOLD"
-
-        elif self.state == "HOLD":
-            self.stop()
-            if now - self.hold_start >= HOLD_TIME:
-                self.wi += 1; self.state = "ROTATE"
-
-    # --- HELPERS ---
-    def cmd(self, l, a): 
-        m = Twist(); m.linear.x, m.angular.z = float(l), float(a)
-        self.pub_cmd.publish(m)
-    def stop(self): 
-        self.pub_cmd.publish(Twist()); self.prev_lin_cmd=0.0; self.prev_ang_cmd=0.0
-    def ramp_linear(self, d, dt):
-        self.prev_lin_cmd += clamp(d - self.prev_lin_cmd, -MAX_LIN_ACCEL*dt, MAX_LIN_ACCEL*dt)
-        return float(self.prev_lin_cmd)
-    def ramp_angular(self, d, dt):
-        self.prev_ang_cmd += clamp(d - self.prev_ang_cmd, -MAX_ANG_ACCEL*dt, MAX_ANG_ACCEL*dt)
-        return float(self.prev_ang_cmd)
-
-def main(args=None):
-    rclpy.init(args=args)
-    try: rclpy.spin(WaypointNav())
+def main():
+    rclpy.init()
+    try: rclpy.spin(PlantDetectionNode())
     except KeyboardInterrupt: pass
     finally: rclpy.shutdown()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
