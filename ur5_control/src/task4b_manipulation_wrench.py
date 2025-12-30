@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Arm full pick-and-place node with FORCE FEEDBACK verification.
+Arm full pick-and-place node with EXPLICIT ZERO VELOCITY SAFETY.
 """
 
 import rclpy
@@ -81,7 +81,7 @@ class ArmFullSequence(Node):
         self.after_drop2 = (np.array([-0.45978, 0.0011078, 0.42318]),
                             np.array([0.78311, -0.62177, -0.0078359, 0.0090279]))
 
-        # ArUco sequence poses
+        # ArUco sequence poses 
         self.aruco_start = (np.array([-0.094976, -0.24118, 0.56073]),
                             np.array([-0.040722, -0.6963, 0.71155, -0.084885]))
         self.aruco_after_pick1 = (np.array([-0.094976, -0.24118, 0.56073]),
@@ -95,7 +95,15 @@ class ArmFullSequence(Node):
         self.aruco_after_drop = (np.array([0.441, -0.055, 0.380]),
                                  np.array([0.666, 0.746, -0.007, -0.006]))
  
-        self.get_logger().info("🚀 NODE STARTED: Scanning for targets...")
+        self.get_logger().info(" NODE STARTED: Scanning for targets...")
+
+    # ------------------ SAFETY HELPER -------------------
+    def stop_arm(self):
+        """Publishes explicit zero velocity to halt the robot."""
+        stop_cmd = Twist()
+        stop_cmd.linear.x = 0.0; stop_cmd.linear.y = 0.0; stop_cmd.linear.z = 0.0
+        stop_cmd.angular.x = 0.0; stop_cmd.angular.y = 0.0; stop_cmd.angular.z = 0.0
+        self.twist_pub.publish(stop_cmd)
 
     # ------------------ TF scanning -------------------
     def scan_tf_frames(self):
@@ -104,7 +112,7 @@ class ArmFullSequence(Node):
         except Exception:
             return
 
-        # 1. Look for ArUco (Fertilizer)
+        # 1. Look for ArUco
         if (not self.aruco_found) and ('1425_fertilizer_1' in frames):
             try:
                 trans = self.tf_buffer.lookup_transform(self.base_frame, '1425_fertilizer_1', rclpy.time.Time(), timeout=Duration(seconds=0.5))
@@ -129,7 +137,7 @@ class ArmFullSequence(Node):
             except Exception:
                 pass
 
-        # 3. Plan Bad Fruits if ArUco is done or we have them all
+        # 3. Plan Bad Fruits
         if self.aruco_found and len(self.detected_bad_fruits) >= 3 and not self.bad_fruits_planned:
             if not any(np.allclose(wp[0], self.drop_pose[0], atol=1e-6) for wp in self.waypoints):
                 self.get_logger().info(" PLANNING: All targets found. Generating Bad Fruit Sequence.")
@@ -149,6 +157,7 @@ class ArmFullSequence(Node):
                               obj3_transform.transform.rotation.z,
                               obj3_transform.transform.rotation.w], dtype=float)
 
+        #aruco poses to drop on ebot
         self.waypoints.append((self.aruco_start[0], self.aruco_start[1], 'none'))
         self.waypoints.append((pos_obj3, quat_obj3, 'magnet_on'))
         self.waypoints.append((self.aruco_after_pick1[0], self.aruco_after_pick1[1], 'none'))
@@ -157,8 +166,22 @@ class ArmFullSequence(Node):
         self.waypoints.append((self.aruco_drop[0], self.aruco_drop[1], 'magnet_off'))
         self.waypoints.append((self.aruco_after_drop[0], self.aruco_after_drop[1], 'none'))
         self.waypoints.append((self.badfruit_start[0], self.badfruit_start[1], 'none'))
+
+        #aruco poses to drop in the bin
+        # self.waypoints.append((self.aruco_start[0], self.aruco_start[1], 'none'))
+        # self.waypoints.append((pos_obj3, quat_obj3, 'magnet_on'))
+        # self.waypoints.append((self.aruco_after_pick1[0], self.aruco_after_pick1[1], 'none'))
+        # self.waypoints.append((self.aruco_after_pick2[0], self.aruco_after_pick2[1], 'none'))
+        # self.waypoints.append((self.aruco_after_drop[0], self.aruco_after_drop[1], 'none'))
+        # self.waypoints.append((self.badfruit_start[0], self.badfruit_start[1], 'none'))
+        # self.waypoints.append((self.badfruit_intermidiate[0], self.badfruit_intermidiate[1], 'none'))
+        # self.waypoints.append((self.drop_pose[0], self.drop_pose[1], 'magnet_off'))
+        # self.waypoints.append((self.after_drop1[0], self.after_drop1[1], 'none'))
+        # self.waypoints.append((self.after_drop2[0], self.after_drop2[1], 'none'))
+        # self.waypoints.append((self.badfruit_start[0], self.badfruit_start[1], 'none'))
+     
         
-        self.get_logger().info(f"📝 PLANNING: ArUco Sequence Generated ({len(self.waypoints)} waypoints). Executing...")
+        self.get_logger().info(f" PLANNING: ArUco Sequence Generated ({len(self.waypoints)} waypoints). Executing...")
 
     def build_badfruit_sequences(self):
         ordered = sorted(list(self.detected_bad_fruits))
@@ -190,13 +213,13 @@ class ArmFullSequence(Node):
     # ------------------ Control loop -------------------
     def control_loop(self):
         if not self.waypoints:
-            self.twist_pub.publish(Twist())
+            self.stop_arm() # Safe idle
             return
 
         if self.current_idx >= len(self.waypoints):
-            self.twist_pub.publish(Twist())
+            self.stop_arm() # EXPLICIT STOP AT END
             if self.current_mode != "COMPLETED":
-                self.get_logger().info("🏁 MISSION ACCOMPLISHED: All sequences finished.")
+                self.get_logger().info(" MISSION ACCOMPLISHED: All sequences finished.")
                 self.current_mode = "COMPLETED"
             return
 
@@ -217,7 +240,7 @@ class ArmFullSequence(Node):
                 transform.transform.rotation.w
             ], dtype=float)
         except Exception:
-            self.twist_pub.publish(Twist())
+            self.stop_arm() # Stop if TF fails
             return
 
         tgt_pos, tgt_quat, action = self.waypoints[self.current_idx]
@@ -264,12 +287,14 @@ class ArmFullSequence(Node):
                     self.get_logger().info(f" GRASP SUCCESS (Force: {self.current_force_z:.1f} > {self.GRASP_THRESHOLD}). Moving Next.")
                     self.current_idx += 1
                 else:
-                    # Force is too low -> Wait and Retry
+                    # Force is too low -> EXPLICITLY STOP and Wait
+                    self.stop_arm()  # <--- SAFETY: FORCE STOP WHILE WAITING
                     self.get_logger().warn(f" Waiting for grasp... Current Force: {self.current_force_z:.1f} / {self.GRASP_THRESHOLD}", throttle_duration_sec=2.0)
                     # NOTE: We do NOT increment current_idx here, so we stay in this loop.
 
             # --- ACTION: MAGNET OFF (DROP) ---
             elif action == 'magnet_off':
+                self.stop_arm() # Stop briefly to ensure clean drop
                 self.control_magnet(False)
                 self.get_logger().info(f" RELEASE COMPLETE. Moving Next.")
                 self.current_idx += 1
@@ -300,6 +325,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.get_logger().info(" EMERGENCY STOP: Sending zero velocity command.")
+        node.stop_arm()  # <--- SAFETY: STOP ON EXIT
         node.destroy_node()
         rclpy.shutdown()
 
