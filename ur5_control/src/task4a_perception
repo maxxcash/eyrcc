@@ -466,9 +466,12 @@ class ArucoTF(Node):
             t.header.frame_id = "base_link"
             t.child_frame_id = f"{teamid}_fertilizer_1"
 
-            t.transform.translation = trans.transform.translation
+            # ---- TRANSLATION OFFSET ----
+            t.transform.translation.x = trans.transform.translation.x + 0.0
+            t.transform.translation.y = trans.transform.translation.y + 0.0
+            t.transform.translation.z = trans.transform.translation.z + 0.0
 
-            # Fixed orientation for UR5 grasp (as per eYRC)
+            # ---- FIXED ORIENTATION (eYRC UR5) ----
             q = quaternion_from_euler(1.571, 3.14, 0.0)
             t.transform.rotation.x = q[0]
             t.transform.rotation.y = q[1]
@@ -480,8 +483,7 @@ class ArucoTF(Node):
         except Exception as e:
             self.get_logger().warn(
                 f"TF lookup failed for ArUco {aruco_info['id']}: {e}"
-            )
-
+        )
 def main(args=None):
     '''
     Purpose:
