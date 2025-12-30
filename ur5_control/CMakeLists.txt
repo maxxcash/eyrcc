@@ -23,12 +23,13 @@ endif()
 
 # Install Python scripts
 install(PROGRAMS
-    src/task3a_perception.py
+    src/task4a_perception.py
     DESTINATION lib/${PROJECT_NAME}
-    RENAME task3a_perception
+    RENAME task4a_perception
 )
 install(PROGRAMS
-    src/bonus_task2_boiler_plate.py
+    src/task4a_manipulation.py
     DESTINATION lib/${PROJECT_NAME}
+    RENAME task4a_manipulation
 )
 ament_package()
