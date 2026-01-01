@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Arm Full Sequence Node
-----------------------
+Arm Full Sequence Node (Real Hardware Optimized)
+------------------------------------------------
 1. Scans for ArUco marker -> Picks -> Places in Bin.
 2. Scans for Bad Fruits -> Picks -> Places in Disposal.
-3. Uses /tcp_pose_raw for feedback and TwistStamped for control.
+3. Uses /tcp_pose_raw for feedback (Real Hardware Feedback).
+4. Uses TwistStamped with Frame ID for explicit safety.
 """
 
 import rclpy
@@ -27,12 +28,12 @@ class ArmFullSequence(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ------------------ Publishers & Services -------------------
-        # Using TwistStamped for safety/compatibility
+        # HARDWARE NOTE: Using TwistStamped is mandatory for MoveIt Servo
         self.twist_pub = self.create_publisher(TwistStamped, '/delta_twist_cmds', 10)
         self.magnet_client = self.create_client(SetBool, '/magnet')
 
         # ------------------ Feedback Subscribers -------------------
-        # 1. Robot Pose (TCP)
+        # 1. Robot Pose (TCP) - Using external topic instead of TF for feedback
         self.current_pos = None
         self.current_quat = None
         self.tcp_sub = self.create_subscription(
@@ -53,10 +54,10 @@ class ArmFullSequence(Node):
         )
 
         # ------------------ Startup Wait -------------------
-        self.get_logger().info(" SYSTEM STARTUP: Waiting for Magnet Service...")
+        self.get_logger().info(" HARDWARE CHECK: Waiting for Magnet Service...")
         while not self.magnet_client.wait_for_service(timeout_sec=1.0):
             pass
-        self.get_logger().info(" SYSTEM READY: Magnet Service Connected.")
+        self.get_logger().info(" HARDWARE CHECK: Magnet Service Connected.")
 
         # ------------------ Timers -------------------
         self.control_timer = self.create_timer(0.02, self.control_loop) # 50 Hz Control
@@ -64,11 +65,10 @@ class ArmFullSequence(Node):
 
         # ------------------ Config -------------------
         self.base_frame = 'base_link'
-        self.ee_frame = 'ee_link' # Only used for TF lookup of targets relative to base
-
-        # Controller Gains & Limits
-        self.max_linear_speed = 0.015  # Slightly bumped for responsiveness
-        self.max_angular_speed = 0.15
+        
+        # HARDWARE NOTE: Speeds are conservative. Increase cautiously.
+        self.max_linear_speed = 0.015  # 1.5 cm/s
+        self.max_angular_speed = 0.15  # ~8 deg/s
         self.position_tolerance = 0.01
         self.orientation_tolerance = 0.1
 
@@ -83,7 +83,7 @@ class ArmFullSequence(Node):
         
         self.current_mode = "SCANNING" 
 
-        # ------------------ HARDCODED POSES (From your snippet) -------------------
+        # ------------------ HARDCODED POSES -------------------
         # 1. Bad Fruit Routine Poses
         self.badfruit_start = (np.array([0.109, 0.323, 0.5]),
                                np.array([0.005, 0.999, -0.011, 0.000]))
@@ -151,6 +151,8 @@ class ArmFullSequence(Node):
         # 1. ARUCO DETECTION
         if (not self.aruco_found) and ('1425_fertilizer_1' in frames):
             try:
+                # HARDWARE NOTE: rclpy.time.Time() = Time 0. This gets the LATEST transform.
+                # Do NOT use self.get_clock().now() here, it will fail on real hardware due to delays.
                 trans = self.tf_buffer.lookup_transform(
                     self.base_frame, '1425_fertilizer_1', rclpy.time.Time(), timeout=Duration(seconds=0.5))
                 
@@ -171,7 +173,7 @@ class ArmFullSequence(Node):
                 
                 if frame not in self.detected_bad_fruits:
                     try:
-                        # Verify we can actually transform it
+                        # HARDWARE NOTE: Using Time 0 (latest available)
                         self.tf_buffer.lookup_transform(
                             self.base_frame, frame, rclpy.time.Time(), timeout=Duration(seconds=0.5))
                         self.detected_bad_fruits.add(frame)
@@ -206,6 +208,7 @@ class ArmFullSequence(Node):
         
         for f in sorted_fruits:
             try:
+                # HARDWARE NOTE: Time 0 (latest)
                 trans = self.tf_buffer.lookup_transform(self.base_frame, f, rclpy.time.Time())
                 pos = np.array([trans.transform.translation.x, trans.transform.translation.y, trans.transform.translation.z])
                 quat = np.array([trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w])
@@ -224,11 +227,18 @@ class ArmFullSequence(Node):
             except Exception:
                 pass
 
-    # ------------------ CONTROL LOOP -------------------
+    # ------------------ SAFETY: EXPLICIT ZERO VELOCITY -------------------
     def stop_arm(self):
+        """
+        Publishes explicit 0 velocity to 'base_link'.
+        Crucial for real hardware to prevent drift or latching.
+        """
         stop_cmd = TwistStamped()
         stop_cmd.header.stamp = self.get_clock().now().to_msg()
-        stop_cmd.header.frame_id = self.base_frame
+        stop_cmd.header.frame_id = self.base_frame # Robot won't stop unless frame matches!
+        # Explicitly set zeros (though default is 0, this is clearer)
+        stop_cmd.twist.linear.x = 0.0; stop_cmd.twist.linear.y = 0.0; stop_cmd.twist.linear.z = 0.0
+        stop_cmd.twist.angular.x = 0.0; stop_cmd.twist.angular.y = 0.0; stop_cmd.twist.angular.z = 0.0
         self.twist_pub.publish(stop_cmd)
 
     def control_magnet(self, state: bool):
@@ -237,16 +247,16 @@ class ArmFullSequence(Node):
         self.magnet_client.call_async(req)
 
     def control_loop(self):
-        # 1. Wait for Valid Feedback
+        # 1. Wait for Valid Feedback (Hardware Check)
         if self.current_pos is None or self.current_quat is None:
             return 
 
-        # 2. Wait for Plan
+        # 2. Wait for Plan (Safety Idle)
         if not self.waypoints:
             self.stop_arm()
             return
 
-        # 3. Check Mission Complete
+        # 3. Check Mission Complete (Safety Stop)
         if self.current_idx >= len(self.waypoints):
             self.stop_arm()
             if self.current_mode != "COMPLETED":
@@ -269,7 +279,7 @@ class ArmFullSequence(Node):
         kp_ang = 4.0
         angular_cmd = kp_ang * rotvec
 
-        # Speed Clipping
+        # Speed Clipping (Safety Limit)
         if np.linalg.norm(linear_cmd) > self.max_linear_speed:
             linear_cmd *= (self.max_linear_speed / np.linalg.norm(linear_cmd))
         if np.linalg.norm(angular_cmd) > self.max_angular_speed:
@@ -292,17 +302,17 @@ class ArmFullSequence(Node):
             # Action: PICK
             if action == 'magnet_on':
                 self.control_magnet(True)
-                # Force check
+                # Force check - SAFETY STOP IF NO GRASP
                 if self.current_force_z > self.GRASP_THRESHOLD:
                     self.get_logger().info(f" GRASPED (Force: {self.current_force_z:.1f}). Next.")
                     self.current_idx += 1
                 else:
-                    self.stop_arm() # Wait for grasp
+                    self.stop_arm() # Explicitly Halt while waiting
                     self.get_logger().warn(" Waiting for grasp...", throttle_duration_sec=2)
             
             # Action: DROP
             elif action == 'magnet_off':
-                self.stop_arm()
+                self.stop_arm() # Stabilize before drop
                 self.control_magnet(False)
                 self.get_logger().info(" DROPPED object.")
                 self.current_idx += 1
@@ -320,6 +330,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # HARDWARE NOTE: Emergency Stop on Exit
+        node.get_logger().info(" SHUTDOWN: Stopping Arm...")
         node.stop_arm()
         node.destroy_node()
         rclpy.shutdown()
