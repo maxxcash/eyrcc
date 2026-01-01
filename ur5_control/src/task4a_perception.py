@@ -72,9 +72,9 @@ class Detection(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # Topics
-        self.rgb_topic = '/camera/image_raw'
-        self.depth_topic = '/camera/depth/image_raw'
-        self.caminfo_topic = '/camera/camera_info'
+        self.rgb_topic = '/camera/camera/color/image_raw'
+        self.depth_topic = '/camera/camera/aligned_depth_to_color/image_raw'
+        self.caminfo_topic = '/camera/camera/camera_info'
 
         # Subscriptions
         self.rgb_sub = self.create_subscription(Image, self.rgb_topic, self.image_callback, 10)
@@ -345,8 +345,8 @@ class ArucoTF(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # Subscriptions
-        self.create_subscription(Image, '/camera/image_raw', self.color_cb, 10)
-        self.create_subscription(Image, '/camera/depth/image_raw', self.depth_cb, 10)
+        self.create_subscription(Image, '/camera/camera/color/image_raw', self.color_cb, 10)
+        self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_cb, 10)
 
         # ---------------- ARUCO SETUP (API SAFE) ----------------
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(
