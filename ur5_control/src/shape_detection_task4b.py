@@ -40,7 +40,7 @@ class FeatureDetection:
         # Filter for Left and Right sectors (Side-facing logic)
         angle_mask = ((deg_angles >= -90) & (deg_angles <= -45)) | \
                      ((deg_angles >= 45) & (deg_angles <= 90))
-                     
+                      
         max_dist = min(data.range_max, self.DETECTION_RADIUS)
         range_mask = (ranges < max_dist) & (ranges > data.range_min)
         valid = angle_mask & range_mask
@@ -102,10 +102,6 @@ class PlantDetectionNode(Node):
     def __init__(self):
         super().__init__('plant_detection_node')
 
-        # REMOVED: use_sim_time parameter
-        # REMOVED: Custom QoS Profile (Hardware drivers usually publish Reliable)
-
-        # Using standard depth=10 (Reliable) for subscriptions
         self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_cb, 10)
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
         self.pub_status = self.create_publisher(String, '/detection_status', 10)
@@ -115,6 +111,11 @@ class PlantDetectionNode(Node):
         # --- CONFIGURATION ---
         self.TARGET_SEQUENCE = ["PENTAGON", "SQUARE", "TRIANGLE",  "SQUARE", "TRIANGLE",]
         self.RELEASE_TIMES = [15.0, 10.0, 10.0, 15.0]
+        
+        # --- NEW: INITIAL DELAY CONFIGURATION ---
+        self.INITIAL_DELAY = 10.0  # Time in seconds to wait before detecting ANYTHING
+        self.node_start_time = self.get_clock().now()
+        self.initial_wait_done = False
 
         self.current_seq_idx = 0
         self.target_locked = False
@@ -134,7 +135,7 @@ class PlantDetectionNode(Node):
         self.robot_pose = None
         self.frame_count = 0
 
-        self.get_logger().info(f"HARDWARE Detector Ready. Sequence Length: {len(self.TARGET_SEQUENCE)}")
+        self.get_logger().info(f"Detector Ready. Initial Delay: {self.INITIAL_DELAY}s")
 
     def odom_cb(self, msg):
         pos = msg.pose.pose.position
@@ -146,7 +147,6 @@ class PlantDetectionNode(Node):
 
     def scan_cb(self, msg):
         self.frame_count += 1
-        # Throttle processing (process every 2nd frame)
         if self.frame_count % 2 != 0 or self.robot_pose is None: return
 
         pc = self.det.laser_points_set(msg)
@@ -168,6 +168,17 @@ class PlantDetectionNode(Node):
         return str(plant_col + 1) if is_top_row else str(plant_col + 5)
 
     def manage_sequence_and_publish(self, detected_objects):
+        # --- NEW: INITIAL DELAY LOGIC ---
+        if not self.initial_wait_done:
+            elapsed_since_start = (self.get_clock().now() - self.node_start_time).nanoseconds * 1e-9
+            if elapsed_since_start < self.INITIAL_DELAY:
+                remaining = self.INITIAL_DELAY - elapsed_since_start
+                self.get_logger().info(f"Waiting to start... {remaining:.1f}s remaining", throttle_duration_sec=1.0)
+                return # EXIT FUNCTION HERE
+            else:
+                self.initial_wait_done = True
+                self.get_logger().info("Initial delay complete. Starting detection.")
+
         if self.current_seq_idx >= len(self.TARGET_SEQUENCE): return
 
         target_shape = self.TARGET_SEQUENCE[self.current_seq_idx]
