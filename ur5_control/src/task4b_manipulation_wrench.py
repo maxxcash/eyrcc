@@ -194,14 +194,29 @@ class ArmFullSequence(Node):
         quat_obj = np.array([obj_tf.transform.rotation.x, obj_tf.transform.rotation.y, obj_tf.transform.rotation.z, obj_tf.transform.rotation.w])
 
         # --- ARUCO PATH ---
+          #aruco poses to drop in the bin
+
         self.waypoints.append((self.aruco_start[0], self.aruco_start[1], 'none'))
-        self.waypoints.append((pos_obj, quat_obj, 'magnet_on'))  # PICK
+
+        self.waypoints.append((pos_obj3, quat_obj3, 'magnet_on'))
+
         self.waypoints.append((self.aruco_after_pick1[0], self.aruco_after_pick1[1], 'none'))
+
         self.waypoints.append((self.aruco_after_pick2[0], self.aruco_after_pick2[1], 'none'))
-        self.waypoints.append((self.aruco_after_pick3[0], self.aruco_after_pick3[1], 'none'))
-        self.waypoints.append((self.aruco_drop[0], self.aruco_drop[1], 'magnet_off')) # DROP
+
         self.waypoints.append((self.aruco_after_drop[0], self.aruco_after_drop[1], 'none'))
-        self.waypoints.append((self.badfruit_start[0], self.badfruit_start[1], 'none')) # Move to wait pose
+
+        self.waypoints.append((self.badfruit_start[0], self.badfruit_start[1], 'none'))
+
+        self.waypoints.append((self.badfruit_intermidiate[0], self.badfruit_intermidiate[1], 'none'))
+
+        self.waypoints.append((self.drop_pose[0], self.drop_pose[1], 'magnet_off'))
+
+        self.waypoints.append((self.after_drop1[0], self.after_drop1[1], 'none'))
+
+        self.waypoints.append((self.after_drop2[0], self.after_drop2[1], 'none'))
+
+        self.waypoints.append((self.badfruit_start[0], self.badfruit_start[1], 'none'))
 
     def build_badfruit_sequences(self):
         sorted_fruits = sorted(list(self.detected_bad_fruits))
