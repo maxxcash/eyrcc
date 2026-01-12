@@ -110,7 +110,7 @@ class PlantDetectionNode(Node):
 
         # --- CONFIGURATION ---
         self.TARGET_SEQUENCE = ["PENTAGON", "SQUARE", "TRIANGLE",  "SQUARE", "TRIANGLE",]
-        self.RELEASE_TIMES = [15.0, 10.0, 10.0, 15.0]
+        self.RELEASE_TIMES = [5.0, 42.0, 30.0, 15.0]
         
         # --- NEW: INITIAL DELAY CONFIGURATION ---
         self.INITIAL_DELAY = 10.0  # Time in seconds to wait before detecting ANYTHING
@@ -158,7 +158,7 @@ class PlantDetectionNode(Node):
         self.manage_sequence_and_publish(raw_objects)
 
     def identify_plant(self, gx, gy):
-        is_top_row = gy > self.ROW_SPLIT_Y
+        is_top_row = gy < self.ROW_SPLIT_Y
         plant_col = -1
         for idx, (x_min, x_max) in enumerate(self.X_BOUNDARIES):
             if x_min <= gx <= x_max:
