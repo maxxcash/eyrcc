@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
@@ -9,11 +8,11 @@ import numpy as np
 import math
 
 # ==============================================================================
-# 1. OPTIMIZED FEATURE EXTRACTOR
+# 1. FEATURE EXTRACTOR (MATH LAYER)
 # ==============================================================================
 class FeatureDetection:
     def __init__(self):
-        self.DETECTION_RADIUS = 0.9
+        self.DETECTION_RADIUS = 1.2  # Increased slightly to see ahead
         self.DELTA = 0.02
         self.EPSILON = 0.05
         self.MAX_SEGMENT_LEN = 1.0
@@ -37,9 +36,9 @@ class FeatureDetection:
         angles = np.linspace(data.angle_min, data.angle_max, len(ranges))
         deg_angles = np.degrees(angles)
         
-        # Filter for Left and Right sectors (Side-facing logic)
-        angle_mask = ((deg_angles >= -90) & (deg_angles <= -45)) | \
-                     ((deg_angles >= 45) & (deg_angles <= 90))
+        # Filter for Left and Right sectors (Side-facing)
+        angle_mask = ((deg_angles >= -90) & (deg_angles <= -30)) | \
+                     ((deg_angles >= 30) & (deg_angles <= 90))
                       
         max_dist = min(data.range_max, self.DETECTION_RADIUS)
         range_mask = (ranges < max_dist) & (ranges > data.range_min)
@@ -51,10 +50,6 @@ class FeatureDetection:
         if len(x) > 5: x, y = self.apply_smoothing(x, y, self.SMOOTHING_WIN)
         return np.vstack((x, y))
 
-    def dist_point_to_line(self, points, line_params):
-        nx, ny, C = line_params
-        return np.abs(nx * points[0] + ny * points[1] + C)
-
     def fast_fit(self, x, y):
         mean_x = np.mean(x); mean_y = np.mean(y)
         data = np.vstack((x - mean_x, y - mean_y))
@@ -65,6 +60,10 @@ class FeatureDetection:
             C = -(nx * mean_x + ny * mean_y)
             return nx, ny, C
         except: return 0, 0, 0
+
+    def dist_point_to_line(self, points, line_params):
+        nx, ny, C = line_params
+        return np.abs(nx * points[0] + ny * points[1] + C)
 
     def detect_lines(self, points):
         lines = []
@@ -96,7 +95,7 @@ class FeatureDetection:
         return lines
 
 # ==============================================================================
-# 2. PLANT & SHAPE DETECTOR NODE (HARDWARE)
+# 2. SHAPE DETECTOR NODE
 # ==============================================================================
 class PlantDetectionNode(Node):
     def __init__(self):
@@ -104,38 +103,36 @@ class PlantDetectionNode(Node):
 
         self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_cb, 10)
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
-        self.pub_status = self.create_publisher(String, '/detection_status', 10)
+        
+        # --- OUTPUT: Publishes shape info for the Nav Node ---
+        self.pub_shape_info = self.create_publisher(String, '/shape_info', 10)
 
         self.det = FeatureDetection()
 
-        # --- CONFIGURATION ---
-        self.TARGET_SEQUENCE = ["PENTAGON", "SQUARE", "TRIANGLE",  "SQUARE", "TRIANGLE",]
-        self.RELEASE_TIMES = [5.0, 42.0, 30.0, 15.0]
+        # --- MISSION CONFIGURATION ---
+        self.TARGET_SEQUENCE = ["PENTAGON", "SQUARE", "TRIANGLE",  "SQUARE", "TRIANGLE"]
+        # Cooldowns to prevent re-detecting the same shape immediately
+        self.RELEASE_TIMES = [8.0, 42.0, 30.0, 15.0] 
         
-        # --- NEW: INITIAL DELAY CONFIGURATION ---
-        self.INITIAL_DELAY = 10.0  # Time in seconds to wait before detecting ANYTHING
+        self.INITIAL_DELAY = 5.0
         self.node_start_time = self.get_clock().now()
         self.initial_wait_done = False
 
         self.current_seq_idx = 0
-        self.target_locked = False
-        self.published_count = 0
-        self.lock_time = None
-        self.stored_shape_data = None
+        self.is_cooling_down = False
+        self.cooldown_start_time = None
 
-        self.ALIGNMENT_TOLERANCE = 0.08
-
-        # Map Config (Swapped Axes)
+        # Map Config (Swapped Axes based on your waypoints)
         self.ROW_SPLIT_Y = 0.0
         self.X_BOUNDARIES = [
             (1.0, 1.6), (1.8, 2.4), (2.6, 3.2), (3.3, 3.9)
         ]
-        self.LIDAR_OFFSET_X = 0.4
+        self.LIDAR_OFFSET_X = 0.0
         self.LIDAR_OFFSET_Y = 0.0
         self.robot_pose = None
         self.frame_count = 0
 
-        self.get_logger().info(f"Detector Ready. Initial Delay: {self.INITIAL_DELAY}s")
+        self.get_logger().info(f"Shape Detector Ready. Targets: {len(self.TARGET_SEQUENCE)}")
 
     def odom_cb(self, msg):
         pos = msg.pose.pose.position
@@ -147,15 +144,65 @@ class PlantDetectionNode(Node):
 
     def scan_cb(self, msg):
         self.frame_count += 1
-        if self.frame_count % 2 != 0 or self.robot_pose is None: return
+        if self.frame_count % 3 != 0 or self.robot_pose is None: return
 
+        # 1. Check Initial Delay
+        if not self.initial_wait_done:
+            elapsed = (self.get_clock().now() - self.node_start_time).nanoseconds * 1e-9
+            if elapsed > self.INITIAL_DELAY: self.initial_wait_done = True
+            else: return
+
+        # 2. Check Cooldown
+        if self.is_cooling_down:
+            elapsed = (self.get_clock().now() - self.cooldown_start_time).nanoseconds * 1e-9
+            try: required_wait = self.RELEASE_TIMES[self.current_seq_idx - 1]
+            except: required_wait = 10.0
+            
+            if elapsed > required_wait:
+                self.is_cooling_down = False
+                self.get_logger().info(f"Cooldown done. Searching for: {self.TARGET_SEQUENCE[self.current_seq_idx]}")
+            else:
+                return 
+
+        # 3. Check Mission Complete
+        if self.current_seq_idx >= len(self.TARGET_SEQUENCE): return
+
+        # 4. Feature Extraction
         pc = self.det.laser_points_set(msg)
-        lines = []
-        if pc.shape[1] > 0:
-            lines = self.det.detect_lines(pc)
-
+        if pc.shape[1] < 5: return
+        lines = self.det.detect_lines(pc)
         raw_objects = self.classify_objects(lines)
-        self.manage_sequence_and_publish(raw_objects)
+
+        # 5. Check against Target
+        target_shape = self.TARGET_SEQUENCE[self.current_seq_idx]
+        
+        for name, local_pos, (gx, gy), color, dist in raw_objects:
+            if target_shape in name:
+                # Identify Label
+                plant_id = self.identify_plant(gx, gy)
+                label = "UNKNOWN"
+                if "SQUARE" in name: label = "BAD_HEALTH"
+                elif "TRIANGLE" in name: label = "FERTILIZER_REQUIRED"
+                elif "PENTAGON" in name: label = "DOCK_STATION"
+
+                # --- NEW: FORCE ID 0 FOR DOCK STATION ---
+                if "DOCK" in label:
+                    plant_id = "0"
+                # ----------------------------------------
+
+                # Publish Info
+                msg_str = f"{label},{gx:.2f},{gy:.2f},{plant_id}"
+                out_msg = String()
+                out_msg.data = msg_str
+                self.pub_shape_info.publish(out_msg)
+
+                self.get_logger().info(f">>> FOUND {target_shape} (ID={plant_id}). Sent to Nav.")
+
+                # Cooldown
+                self.current_seq_idx += 1
+                self.is_cooling_down = True
+                self.cooldown_start_time = self.get_clock().now()
+                break
 
     def identify_plant(self, gx, gy):
         is_top_row = gy < self.ROW_SPLIT_Y
@@ -166,73 +213,6 @@ class PlantDetectionNode(Node):
                 break
         if plant_col == -1: return "0"
         return str(plant_col + 1) if is_top_row else str(plant_col + 5)
-
-    def manage_sequence_and_publish(self, detected_objects):
-        # --- NEW: INITIAL DELAY LOGIC ---
-        if not self.initial_wait_done:
-            elapsed_since_start = (self.get_clock().now() - self.node_start_time).nanoseconds * 1e-9
-            if elapsed_since_start < self.INITIAL_DELAY:
-                remaining = self.INITIAL_DELAY - elapsed_since_start
-                self.get_logger().info(f"Waiting to start... {remaining:.1f}s remaining", throttle_duration_sec=1.0)
-                return # EXIT FUNCTION HERE
-            else:
-                self.initial_wait_done = True
-                self.get_logger().info("Initial delay complete. Starting detection.")
-
-        if self.current_seq_idx >= len(self.TARGET_SEQUENCE): return
-
-        target_shape = self.TARGET_SEQUENCE[self.current_seq_idx]
-        try: current_release_time = self.RELEASE_TIMES[self.current_seq_idx]
-        except IndexError: current_release_time = 15.0
-
-        # --- STEP 1: LATCH ONTO FIRST SIGHTING ---
-        if self.stored_shape_data is None:
-            for name, local_pos, (gx, gy), color, dist in detected_objects:
-                if target_shape in name:
-                    plant_id = self.identify_plant(gx, gy)
-                    label = "UNKNOWN"
-                    if "SQUARE" in name: label = "BAD_HEALTH"
-                    elif "TRIANGLE" in name: label = "FERTILIZER_REQUIRED"
-                    elif "PENTAGON" in name: label = "DOCK_STATION"
-
-                    self.stored_shape_data = {
-                        'gx': gx, 'gy': gy, 'plant_id': plant_id, 'label': label
-                    }
-                    self.get_logger().info(f"VISUAL CONTACT: {target_shape} at X={gx:.2f}. Waiting for alignment...")
-                    break
-
-        # --- STEP 2: CHECK ALIGNMENT ---
-        if self.stored_shape_data is not None and not self.target_locked:
-            rx, ry, _ = self.robot_pose
-            shape_x = self.stored_shape_data['gx']
-            x_diff = abs(rx - shape_x)
-
-            if x_diff < self.ALIGNMENT_TOLERANCE:
-                if self.published_count < 1:
-                    label = self.stored_shape_data['label']
-                    plant_id = self.stored_shape_data['plant_id']
-
-                    msg = String()
-                    data_str = f"{label},{shape_x:.2f},{ry:.2f},{plant_id}"
-                    msg.data = data_str
-                    self.pub_status.publish(msg)
-
-                    self.get_logger().info(f"ALIGNED -> PUBLISHED: {data_str}")
-                    self.published_count += 1
-
-                    self.target_locked = True
-                    self.lock_time = self.get_clock().now()
-
-        # --- STEP 3: COOLDOWN & NEXT TASK ---
-        if self.target_locked:
-            elapsed = (self.get_clock().now() - self.lock_time).nanoseconds * 1e-9
-            if elapsed > current_release_time:
-                self.get_logger().info(f"TASK COMPLETE ({target_shape}). Scanning for next target...")
-                self.current_seq_idx += 1
-                self.target_locked = False
-                self.lock_time = None
-                self.published_count = 0
-                self.stored_shape_data = None
 
     def get_global_coords(self, local_x, local_y):
         rx, ry, theta = self.robot_pose
@@ -271,7 +251,7 @@ class PlantDetectionNode(Node):
                 if intersection is None: continue
                 cx, cy = intersection
 
-                # Check if intersection is actually near the segments
+                # Check if intersection is valid (near segments)
                 dist_l1 = min(math.hypot(cx-l1_start[0], cy-l1_start[1]), math.hypot(cx-l1_end[0], cy-l1_end[1]))
                 dist_l2 = min(math.hypot(cx-l2_start[0], cy-l2_start[1]), math.hypot(cx-l2_end[0], cy-l2_end[1]))
 
@@ -288,7 +268,7 @@ class PlantDetectionNode(Node):
                     if name != "Unknown":
                         potential_corners.append({'name': name, 'pos': (cx, cy), 'lines': {i, j}})
 
-        # Merge corners to find whole shapes
+        # Merge corners
         processed_indices = set()
         for m in range(len(potential_corners)):
             for n in range(m + 1, len(potential_corners)):
@@ -301,25 +281,31 @@ class PlantDetectionNode(Node):
                     gx, gy = self.get_global_coords(mid_x, mid_y)
                     dist = math.hypot(mid_x, mid_y)
                     obj = None
-                    if c1['name'] == "SQUARE" and c2['name'] == "SQUARE":
-                        obj = ("SQUARE (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
-                    elif c1['name'] == "TRIANGLE" and c2['name'] == "TRIANGLE":
+                    # "House" Logic (Square + Triangle = Pentagon)
+                    if (c1['name'] == "SQUARE" and c2['name'] == "TRIANGLE") or \
+                       (c1['name'] == "TRIANGLE" and c2['name'] == "SQUARE"):
                         obj = ("PENTAGON (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
-                    elif (c1['name'] == "SQUARE" and c2['name'] == "TRIANGLE") or \
-                         (c1['name'] == "TRIANGLE" and c2['name'] == "SQUARE"):
-                        obj = ("PENTAGON (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
+                    # Double Square Logic
+                    elif c1['name'] == "SQUARE" and c2['name'] == "SQUARE":
+                         obj = ("SQUARE (Verified)", (mid_x, mid_y), (gx, gy), (0, 0, 0), dist)
 
                     if obj:
                         detected_objects.append(obj)
                         processed_indices.add(m); processed_indices.add(n)
 
-        # Add remaining single corners as potential objects
+        # Add single corners
         for idx, c in enumerate(potential_corners):
             if idx not in processed_indices:
                 if c['name'] == "TRIANGLE":
                     gx, gy = self.get_global_coords(c['pos'][0], c['pos'][1])
                     dist = math.hypot(c['pos'][0], c['pos'][1])
                     detected_objects.append((c['name'], c['pos'], (gx, gy), (0, 0, 0), dist))
+                # Add Single Squares if robust
+                if c['name'] == "SQUARE":
+                     gx, gy = self.get_global_coords(c['pos'][0], c['pos'][1])
+                     dist = math.hypot(c['pos'][0], c['pos'][1])
+                     detected_objects.append((c['name'], c['pos'], (gx, gy), (0, 0, 0), dist))
+
         return detected_objects
 
 def main():
