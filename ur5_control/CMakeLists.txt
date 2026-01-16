@@ -23,13 +23,23 @@ endif()
 
 # Install Python scripts
 install(PROGRAMS
+    src/task5_perception.py
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME task5_perception
+)
+install(PROGRAMS
+    src/ebot_nav_task5.py
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME ebot_nav_task5
+)
+install(PROGRAMS
     src/task4a_perception.py
     DESTINATION lib/${PROJECT_NAME}
     RENAME task4a_perception
 )
 install(PROGRAMS
-    src/task4a_manipulation.py
+    src/shape_detector_task5.py
     DESTINATION lib/${PROJECT_NAME}
-    RENAME task4a_manipulation
+    RENAME shape_detector_task5
 )
 ament_package()
