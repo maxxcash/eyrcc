@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
@@ -9,7 +8,6 @@ from std_msgs.msg import String
 import math
 
 # -------------------------- WAYPOINTS ---------------------------
-# Format: (x, y, yaw)
 WAYPOINTS = [
     (0.0, 0.0, -1.3),
     (0.2, -1.67, 0.0),
@@ -18,15 +16,14 @@ WAYPOINTS = [
     (0.1,  1.78, -1.57),
     (0.1, 0.0, -3.14),
     (5.0, 0.0, 0.0)
-    # (4.8, 0.0, 3.14),
-    # (0.0, 0.0, 3.14),
-    # (0.0, 0.0, 0.0)
-    ]
+]
 
 FINAL_REVERSE_X_TARGET = 0.2
 
 # ------------------------ TUNING PARAMETERS -----------------------
-STOP_DURATION = 2.0
+WAIT_BEFORE_PUBLISH = 1.0 
+# WAIT_AFTER_PUBLISH is now dynamic!
+
 POSE_TOL = 0.05
 YAW_TOL = math.radians(15)
 START_DRIVE_ANGLE = math.radians(15)
@@ -57,13 +54,12 @@ class WaypointNav(Node):
     def __init__(self):
         super().__init__("ebot_nav_logger")
 
-        # Hardware typically does NOT use sim_time
-        # Standard QoS (depth=10) usually matches hardware drivers (Reliable)
         self.sub_odom = self.create_subscription(Odometry, "/odom", self.cb_odom, 10)
         self.sub_scan = self.create_subscription(LaserScan, "/scan", self.cb_scan, 10)
-        self.sub_detection = self.create_subscription(String, "/detection_status", self.cb_detection, 10)
+        self.sub_detection = self.create_subscription(String, "/shape_info", self.cb_shape_info, 10)
+        
+        self.pub_status = self.create_publisher(String, "/detection_status", 10)
         self.pub_cmd  = self.create_publisher(Twist, "/cmd_vel", 10)
-
         self.timer = self.create_timer(1.0 / LOOP_HZ, self.loop)
 
         # Robot State
@@ -76,30 +72,31 @@ class WaypointNav(Node):
         self.hold_start = None
         self.prev_lin_cmd = 0.0
         self.prev_ang_cmd = 0.0
-        self.last_yaw_err = 0.0
         self.scan = []
 
-        # Alignment State
-        self.target_x = None
-        self.target_label = ""
-        self.stop_condition = 0
-
-        self.is_paused = False
-        self.pause_start_time = 0.0
+        # --- PAUSE LOGIC VARIABLES ---
+        self.target_x = None         
+        self.pending_msg_data = ""   
+        self.stop_condition = 0      
+        
+        self.pause_phase = 0         
+        self.phase_start_time = 0.0
+        
+        # --- NEW: Dynamic Wait Time ---
+        self.dynamic_wait_time = 2.0 
 
         self.last_time = self.time_now()
-        self.get_logger().info(">> HARDWARE MODE READY. Waiting for Odom...")
+        self.get_logger().info(">> NAV NODE READY. Waiting for Odom...")
 
     def time_now(self):
-        # Wall clock time for hardware
         t = self.get_clock().now()
         s, ns = t.seconds_nanoseconds()
         return s + ns*1e-9
 
-    # ----------------------------- DETECTION -----------------------------
-    def cb_detection(self, msg):
+    # ----------------------------- DETECTION CALLBACK -----------------------------
+    def cb_shape_info(self, msg):
         data = msg.data
-        if self.is_paused or self.target_x is not None: return
+        if self.pause_phase > 0 or self.target_x is not None: return
 
         try:
             parts = data.split(',')
@@ -111,19 +108,24 @@ class WaypointNav(Node):
 
                 if any(x in label for x in valid_triggers):
                     self.target_x = detected_x
-                    self.target_label = label
+                    self.pending_msg_data = data 
 
-                    # Set stop logic based on direction of travel
-                    if self.target_x > self.x:
-                        self.stop_condition = 1
-                        mode = "FORWARD (Stop >= Target)"
+                    # --- NEW: SET DURATION BASED ON TYPE ---
+                    if "DOCK" in label:
+                        # 1s (Phase 1) + 9s (Phase 2) = 10s Total
+                        self.dynamic_wait_time = 15.0
+                        self.get_logger().info("--> DOCK DETECTED: Setting Long Wait (10s)")
                     else:
-                        self.stop_condition = -1
-                        mode = "BACKWARD (Stop <= Target)"
+                        # 1s (Phase 1) + 2s (Phase 2) = 3s Total
+                        self.dynamic_wait_time = 2.0
+                    # ---------------------------------------
 
-                    self.get_logger().info(f"+++ TARGET LOCKED: '{label}' +++")
-                    self.get_logger().info(f"    Target X: {self.target_x:.3f} | Current X: {self.x:.3f}")
-                    self.get_logger().info(f"    Logic: {mode}")
+                    if self.target_x > self.x:
+                        self.stop_condition = 1 
+                    else:
+                        self.stop_condition = -1 
+
+                    self.get_logger().info(f"+++ SHAPE SEEN: '{label}' at X={self.target_x:.2f} +++")
 
         except ValueError: pass
 
@@ -136,11 +138,10 @@ class WaypointNav(Node):
         if not self.pose_ready:
             self.x, self.y, self.yaw = px, py, pyaw
             self.pose_ready = True
-            self.get_logger().info(f">> ODOM RECEIVED. Starting at X={self.x:.2f}, Y={self.y:.2f}")
+            self.get_logger().info(f">> ODOM RECEIVED. Starting at X={self.x:.2f}")
             self.state = "ROTATE" 
             self.log_waypoint_start()
         else:
-            # Low-pass filter for smoothing noisy hardware data
             self.x = ALPHA*self.x + (1-ALPHA)*px
             self.y = ALPHA*self.y + (1-ALPHA)*py
             self.yaw = normalize(self.yaw + (1-ALPHA)*normalize(pyaw - self.yaw))
@@ -149,41 +150,55 @@ class WaypointNav(Node):
 
     # ----------------------------- MAIN LOOP -----------------------------
     def loop(self):
-        # DEBUG: Print if waiting for Odom (throttled to once per 2 secs)
-        if not self.pose_ready:
-            self.get_logger().warn("Loop running, waiting for Odom data...", throttle_duration_sec=2.0)
-            return
+        if not self.pose_ready: return
 
         now = self.time_now()
         dt = now - self.last_time
         if dt <= 0: dt = 1.0/LOOP_HZ
         self.last_time = now
 
-        # --- 1. PAUSE LOGIC ---
-        if self.is_paused:
+        # ================= PAUSE SEQUENCE LOGIC =================
+        
+        # --- PHASE 1: Wait 1 sec BEFORE publishing ---
+        if self.pause_phase == 1:
             self.stop()
-            if (now - self.pause_start_time) >= STOP_DURATION:
-                self.get_logger().info(f">> RESUMING navigation. Done with '{self.target_label}'.")
-                self.is_paused = False
-                self.target_x = None
+            if (now - self.phase_start_time) >= WAIT_BEFORE_PUBLISH:
+                out_msg = String()
+                out_msg.data = self.pending_msg_data
+                self.pub_status.publish(out_msg)
+                self.get_logger().info(f">> PHASE 1 DONE. PUBLISHED: {self.pending_msg_data}")
+                
+                self.pause_phase = 2
+                self.phase_start_time = now 
+                self.get_logger().info(f">> Starting PHASE 2 (Wait {self.dynamic_wait_time}s)...")
             return
 
-        # --- 2. TARGET STOP CHECK ---
+        # --- PHASE 2: Wait VARIABLE secs AFTER publishing ---
+        if self.pause_phase == 2:
+            self.stop()
+            # USE DYNAMIC TIME HERE
+            if (now - self.phase_start_time) >= self.dynamic_wait_time:
+                self.get_logger().info(">> PHASE 2 DONE. Resuming Mission.")
+                self.pause_phase = 0
+                self.target_x = None
+                self.pending_msg_data = ""
+            return
+
+        # --- TRIGGER ---
         if self.target_x is not None:
             stop = False
             if self.stop_condition == 1 and self.x >= self.target_x: stop = True
             elif self.stop_condition == -1 and self.x <= self.target_x: stop = True
 
             if stop:
-                self.get_logger().warn(f"!!! STOP TRIGGERED !!!")
-                self.get_logger().warn(f"    Robot X: {self.x:.4f} crossed Target: {self.target_x:.4f}")
-                self.get_logger().warn(f"    Action: Pausing for {STOP_DURATION}s")
+                self.get_logger().warn(f"!!! TARGET REACHED. STARTING STOP SEQUENCE !!!")
                 self.stop()
-                self.is_paused = True
-                self.pause_start_time = now
+                self.pause_phase = 1         
+                self.phase_start_time = now  
                 return
-
-        # --- 3. WAYPOINT NAV ---
+        
+        # ================= STANDARD NAVIGATION =================
+        
         if self.wi >= len(WAYPOINTS):
             if self.state != "FINAL_REVERSE":
                 self.state = "FINAL_REVERSE"
@@ -204,7 +219,6 @@ class WaypointNav(Node):
         yaw_err = normalize(math.atan2(dy, dx) - self.yaw)
         final_yaw_err = normalize(gyaw - self.yaw)
 
-        # STATE MACHINE LOGGING
         if self.state == "ROTATE":
             if abs(yaw_err) > START_DRIVE_ANGLE:
                 ang = clamp(KP_ANG * yaw_err, -MAX_ANG, MAX_ANG)
@@ -244,16 +258,13 @@ class WaypointNav(Node):
                     self.log_waypoint_start()
                     self.change_state("ROTATE")
 
-    # --- HELPERS ---
     def change_state(self, new_state):
         self.get_logger().info(f"    State Change: {self.state} -> {new_state}")
         self.state = new_state
 
     def log_waypoint_start(self):
         gx, gy, _ = WAYPOINTS[self.wi]
-        self.get_logger().info(f"--------------------------------------------------")
-        self.get_logger().info(f"WAYPOINT [{self.wi+1}/{len(WAYPOINTS)}]: Moving to X={gx:.2f}, Y={gy:.2f}")
-        self.get_logger().info(f"--------------------------------------------------")
+        self.get_logger().info(f"--- WAYPOINT [{self.wi+1}/{len(WAYPOINTS)}]: {gx:.2f}, {gy:.2f} ---")
 
     def cmd(self, l, a):
         m = Twist(); m.linear.x, m.angular.z = float(l), float(a)
