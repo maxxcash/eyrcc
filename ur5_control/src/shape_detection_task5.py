@@ -12,7 +12,7 @@ import math
 # ==============================================================================
 class FeatureDetection:
     def __init__(self):
-        self.DETECTION_RADIUS = 1.2  # Increased slightly to see ahead
+        self.DETECTION_RADIUS = 0.9  # Increased slightly to see ahead
         self.DELTA = 0.02
         self.EPSILON = 0.05
         self.MAX_SEGMENT_LEN = 1.0
