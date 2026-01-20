@@ -79,8 +79,8 @@ class Detection(Node):
         
         # CONFIGURATION
         self.persistence_threshold = 40.0  # Seconds a fruit must be seen before publishing
-        self.distance_threshold = 50.0    # Pixel distance to consider it the "same" fruit
-        self.timeout_threshold = 0.5      # Seconds before we delete a lost fruit
+        self.distance_threshold = 10.0    # Pixel distance to consider it the "same" fruit
+        self.timeout_threshold = 500.0      # Seconds before we delete a lost fruit
 
         self.get_logger().info("Subscribed to RGB, Depth, and Camera Info topics.")
 
@@ -480,9 +480,9 @@ class ArucoTF(Node):
                 t.header.stamp = self.get_clock().now().to_msg()
                 t.header.frame_id = "base_link"
                 t.child_frame_id = f"{teamid}_fertilizer_1"
-                t.transform.translation.x = trans.transform.translation.x + 0.0
-                t.transform.translation.y = trans.transform.translation.y - 0.005
-                t.transform.translation.z = trans.transform.translation.z + 0.0
+                t.transform.translation.x = trans.transform.translation.x - 0.03
+                t.transform.translation.y = trans.transform.translation.y + 0.0
+                t.transform.translation.z = trans.transform.translation.z + 0.04
                 if aruco_info['is_flat']:
                     # Marker is lying flat on the ground.
                     # You likely need to rotate X by 90 degrees compared to your vertical setup.
