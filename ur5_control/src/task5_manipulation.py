@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
-from std_msgs.msg import Float64MultiArray, Float32 # Added Float32
+from geometry_msgs.msg import TwistStamped, Twist  # Updated
+from control_msgs.msg import JointJog            # Updated
+from std_msgs.msg import Float32
 from sensor_msgs.msg import JointState
 from tf2_ros import Buffer, TransformListener
 from std_srvs.srv import SetBool 
-from control_msgs.msg import JointJog
-from geometry_msgs.msg import TwistStamped
-
 
 import numpy as np
 import time
@@ -17,7 +15,7 @@ class HybridArmControl(Node):
     def __init__(self):
         super().__init__('hybrid_arm_control')
 
-        # --- 1. PUBLISHERS ---
+        # --- 1. PUBLISHERS (Updated types) ---
         self.pub_twist = self.create_publisher(TwistStamped, '/delta_twist_cmds', 10)       
         self.pub_joint = self.create_publisher(JointJog, '/delta_joint_cmds', 10)
 
@@ -66,7 +64,7 @@ class HybridArmControl(Node):
             self.joints_received = True
 
     def force_cb(self, msg):
-        self.current_force = msg.data # Store latest force reading
+        self.current_force = msg.data 
 
     def mission_loop(self):
         if not self.joints_received:
@@ -86,7 +84,6 @@ class HybridArmControl(Node):
         # ==========================================================
         # SEQUENCE 1: ARUCO
         # ==========================================================
-        
         if self.step == 0:
             if self.move_joints_to(self.aruco_pick):
                 self.get_logger().info("Reached Pre-Pick. Pausing...")
@@ -98,17 +95,13 @@ class HybridArmControl(Node):
                 self.start_wait()
 
         elif self.step == 2:
-            # Move to pick position
             if self.servo_to_target("1425_fertilizer_1", y_offset=0.01):
-                self._set_magnet(True) # Try to attach
-                
-                # GRASP CHECK: Only proceed if force > 10
+                self._set_magnet(True) 
                 if self.current_force > 10.0:
                     self.get_logger().info(f"Grasp SUCCESS (Force: {self.current_force:.1f}). Lifting...")
                     self.start_wait()
                 else:
                     self.get_logger().warn(f"Grasp FAILED/WAITING (Force: {self.current_force:.1f})... Retrying...")
-                    # Note: We do NOT call start_wait(), so we stay in Step 2
 
         elif self.step == 3:
             if self.move_joints_to(self.aruco_pick):
@@ -122,7 +115,7 @@ class HybridArmControl(Node):
 
         elif self.step == 5:
             if self.move_joints_to(self.aruco_drop):
-                self._set_magnet(False) # Drop
+                self._set_magnet(False) 
                 self.get_logger().info("Dropped ArUco. Pausing...")
                 self.start_wait()
 
@@ -134,7 +127,6 @@ class HybridArmControl(Node):
         # ==========================================================
         # SEQUENCE 2: BAD FRUIT 1
         # ==========================================================
-
         elif self.step == 7:
             if self.move_joints_to(self.bad_fruit_pick):
                 self.get_logger().info("In Position (Bad Fruit). Pausing...")
@@ -142,13 +134,12 @@ class HybridArmControl(Node):
 
         elif self.step == 8:
             if self.servo_to_target("1425_bad_fruit_1", z_offset=0.01):
-                self._set_magnet(True) # Activate early
+                self._set_magnet(True) 
                 self.get_logger().info("Hovering Bad Fruit 1. Pausing...")
                 self.start_wait()
 
         elif self.step == 9:
             if self.servo_to_target("1425_bad_fruit_1", z_offset=0.05):      
-                # GRASP CHECK
                 if self.current_force > 10.0:
                     self.get_logger().info(f"Picked Bad Fruit 1 (Force: {self.current_force:.1f})! Pausing...")
                     self.start_wait()
@@ -162,7 +153,7 @@ class HybridArmControl(Node):
         
         elif self.step == 11:
             if self.move_joints_to(self.bad_fruit_drop): 
-                self._set_magnet(False) # Drop
+                self._set_magnet(False) 
                 self.get_logger().info("Dropped Bad Fruit 1. Pausing...")
                 self.start_wait()
 
@@ -179,7 +170,6 @@ class HybridArmControl(Node):
         # ==========================================================
         # SEQUENCE 3: BAD FRUIT 2
         # ==========================================================
-
         elif self.step == 14:
             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.01):
                 self._set_magnet(True)
@@ -188,7 +178,6 @@ class HybridArmControl(Node):
 
         elif self.step == 15:
             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.1):      
-                # GRASP CHECK
                 if self.current_force > 10.0:
                     self.get_logger().info(f"Picked Bad Fruit 2 (Force: {self.current_force:.1f})! Pausing...")
                     self.start_wait()
@@ -219,7 +208,6 @@ class HybridArmControl(Node):
         # ==========================================================
         # SEQUENCE 4: BAD FRUIT 3
         # ==========================================================
-
         elif self.step == 20:
             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.01):
                 self._set_magnet(True)
@@ -228,7 +216,6 @@ class HybridArmControl(Node):
 
         elif self.step == 21:
             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.1):      
-                # GRASP CHECK
                 if self.current_force > 10.0:
                     self.get_logger().info(f"Picked Bad Fruit 3 (Force: {self.current_force:.1f})! Pausing...")
                     self.start_wait()
@@ -256,10 +243,6 @@ class HybridArmControl(Node):
                 self.get_logger().info("Back to Pick Position. Pausing...")
                 self.start_wait()
 
-        # ==========================================================
-        # END
-        # ==========================================================
-
         elif self.step == 26:
             if self.move_joints_to(self.home_pos):
                 self.get_logger().info("All Missions Complete.")
@@ -273,7 +256,7 @@ class HybridArmControl(Node):
         self.wait_start_time = self.get_clock().now()
         self.is_waiting = True
 
-    # --- HELPER: JOINT MOVE ---
+    # --- UPDATED JOINT MOVE (Send JointJog) ---
     def move_joints_to(self, target_array):
         error = target_array - self.current_joints
         
@@ -284,12 +267,19 @@ class HybridArmControl(Node):
         cmd = error * Kp
         cmd = np.clip(cmd, -3.14, 3.14) 
         
-        msg = Float64MultiArray()
-        msg.data = cmd.tolist()
+        # Create JointJog message
+        msg = JointJog()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "base_link"
+        # Optional: You can add joint names here if your controller requires them
+        # msg.joint_names = ['shoulder_pan_joint', ...]
+        msg.velocities = cmd.tolist()
+        msg.duration = 0.02 # Valid for 20ms
+        
         self.pub_joint.publish(msg)
         return False
 
-    # --- HELPER: CARTESIAN MOVE ---
+    # --- UPDATED CARTESIAN MOVE (Send TwistStamped) ---
     def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0):
         try:
             trans = self.tf_buffer.lookup_transform('base_link', frame_name, rclpy.time.Time())
@@ -313,21 +303,33 @@ class HybridArmControl(Node):
             if distance < 0.03: 
                 return True
             
-            twist = Twist()
-            twist.linear.x = error[0] * 2.0
-            twist.linear.y = error[1] * 2.0
-            twist.linear.z = error[2] * 2.0
-            self.pub_twist.publish(twist)
+            # Create TwistStamped message
+            ts = TwistStamped()
+            ts.header.stamp = self.get_clock().now().to_msg()
+            ts.header.frame_id = "base_link"
+            ts.twist.linear.x = error[0] * 2.0
+            ts.twist.linear.y = error[1] * 2.0
+            ts.twist.linear.z = error[2] * 2.0
+            
+            self.pub_twist.publish(ts)
             return False
 
         except Exception:
             return False
 
     def stop_robot(self):
-        self.pub_twist.publish(Twist())
-        zero_joints = Float64MultiArray()
-        zero_joints.data = [0.0]*6
-        self.pub_joint.publish(zero_joints)
+        # Stop Twist
+        ts = TwistStamped()
+        ts.header.stamp = self.get_clock().now().to_msg()
+        ts.header.frame_id = "base_link"
+        self.pub_twist.publish(ts)
+        
+        # Stop Joints
+        jj = JointJog()
+        jj.header.stamp = self.get_clock().now().to_msg()
+        jj.header.frame_id = "base_link"
+        jj.velocities = [0.0] * 6
+        self.pub_joint.publish(jj)
 
     # --- HELPER: MAGNET ---
     def _set_magnet(self, state):
