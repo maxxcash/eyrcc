@@ -41,21 +41,21 @@ class Detection(Node):
     Purpose:
         A ROS2 node that subscribes to RGB, depth, and camera info topics,
         detects "bad fruits" in the image, estimates their 3D position,
-        tracks them over time, and publishes corresponding transforms 
+        tracks them over time, and publishes corresponding transforms
         only after they persist for a set duration.
     '''
- 
+
     def __init__(self):
         super().__init__('image_depth_subscriber')
 
         # Initialize CvBridge for ROS <-> OpenCV conversions
-        self.bridge = CvBridge()   
-        self.cv_image = None       
-        self.depth_image = None    
+        self.bridge = CvBridge()
+        self.cv_image = None
+        self.depth_image = None
 
         # Camera intrinsics (defaults until CameraInfo is received)
-        self.fx, self.fy = 915.30, 914.03   
-        self.cx, self.cy = 642.72, 361.97   
+        self.fx, self.fy = 915.30, 914.03
+        self.cx, self.cy = 642.72, 361.97
 
         # TF buffer, listener, broadcaster
         self.tf_buffer = tf2_ros.Buffer()
@@ -65,7 +65,7 @@ class Detection(Node):
         # Topics
         self.rgb_topic = '/camera/camera/color/image_raw'
         self.depth_topic = '/camera/camera/aligned_depth_to_color/image_raw'
-        self.caminfo_topic = '/camera/camera/camera_info'
+        self.caminfo_topic = '/camera/camera/color/camera_info'
 
         # Subscriptions
         self.rgb_sub = self.create_subscription(Image, self.rgb_topic, self.image_callback, 10)
@@ -74,12 +74,12 @@ class Detection(Node):
 
         # --- TRACKING VARIABLES ---
         # Stores fruit history: {id: {'first_seen': time, 'last_seen': time, 'centroid': (x,y), 'data': dict}}
-        self.tracked_fruits = {}   
-        self.next_fruit_id = 1     
-        
+        self.tracked_fruits = {}
+        self.next_fruit_id = 1
+
         # CONFIGURATION
         self.persistence_threshold = 40.0  # Seconds a fruit must be seen before publishing
-        self.distance_threshold = 10.0    # Pixel distance to consider it the "same" fruit
+        self.distance_threshold = 2.0    # Pixel distance to consider it the "same" fruit
         self.timeout_threshold = 500.0      # Seconds before we delete a lost fruit
 
         self.get_logger().info("Subscribed to RGB, Depth, and Camera Info topics.")
@@ -120,8 +120,8 @@ class Detection(Node):
         hsv = cv2.cvtColor(detection_region, cv2.COLOR_BGR2HSV)
 
         # Color thresholds
-        lower_grey, upper_grey = np.array([0, 0, 80]), np.array([180, 40, 160])
-        lower_green, upper_green = np.array([36, 25, 25]), np.array([86, 255, 255])
+        lower_grey, upper_grey = np.array([96, 15, 60]), np.array([100, 255, 125])
+        lower_green, upper_green = np.array([36, 40, 80]), np.array([86, 255, 255])
 
         grey_mask = cv2.inRange(hsv, lower_grey, upper_grey)
         green_mask = cv2.inRange(hsv, lower_green, upper_green)
@@ -130,13 +130,13 @@ class Detection(Node):
         green_contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         grey_boxes = [cv2.boundingRect(c) for c in grey_contours]
-        
+
         # 1. Gather all raw detections in the current frame
         current_frame_detections = []
 
         for c in green_contours:
             if cv2.contourArea(c) < 500:
-                continue 
+                continue
 
             x, y, w, h = cv2.boundingRect(c)
             if not any(self.is_overlapping((x, y, w, h), gb) for gb in grey_boxes):
@@ -185,7 +185,7 @@ class Detection(Node):
             for fid, info in self.tracked_fruits.items():
                 prev_cx, prev_cy = info['centroid']
                 dist = np.sqrt((cx - prev_cx)**2 + (cy - prev_cy)**2)
-                
+
                 if dist < self.distance_threshold:
                     if dist < min_dist:
                         min_dist = dist
@@ -195,7 +195,7 @@ class Detection(Node):
             if best_match_id is not None:
                 self.tracked_fruits[best_match_id]['last_seen'] = current_time
                 self.tracked_fruits[best_match_id]['centroid'] = (cx, cy)
-                self.tracked_fruits[best_match_id]['data'] = detection 
+                self.tracked_fruits[best_match_id]['data'] = detection
                 matched_ids.add(best_match_id)
             else:
                 new_id = self.next_fruit_id
@@ -210,7 +210,7 @@ class Detection(Node):
 
         # 3. Process Logic: Publish only if confirmed, remove if lost
         ids_to_remove = []
-        
+
         for fid, info in self.tracked_fruits.items():
             # Remove fruits lost for too long
             if current_time - info['last_seen'] > self.timeout_threshold:
@@ -251,7 +251,7 @@ class Detection(Node):
         x1, y1, w1, h1 = box1
         x2, y2, w2, h2 = box2
         return (x1 < x2 + w2 and x1 + w1 > x2) and (y1 < y2 + h2 and y1 + h1 > y2)
-    
+
 
     def publish_tf(self, fruit_info):
         t = TransformStamped()
@@ -292,7 +292,7 @@ class Detection(Node):
 class ArucoTF(Node):
 
     def __init__(self):
-        super().__init__('aruco_tf_publisher')             
+        super().__init__('aruco_tf_publisher')
         self.color_cam_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.colorimagecb, 10)
         self.depth_cam_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depthimagecb, 10)
 
@@ -348,7 +348,7 @@ class ArucoTF(Node):
         gray = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        parameters = cv2.aruco.DetectorParameters_create()
+        parameters = cv2.aruco.DetectorParameters()
 
         corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
 
@@ -394,7 +394,7 @@ class ArucoTF(Node):
                     # Flat markers (floor) usually have pitch near +/- 90.
                     # We use a threshold (e.g., > 45 degrees means it's tilting significantly)
                     is_flat = abs(pitch) > 60 and abs(pitch) < 90
-                    
+
                     # Convert rotation to yaw angle
                     r = R.from_rotvec(rvec.flatten())
                     yaw_angle_deg = float(r.as_euler('zyx', degrees=True)[0])
@@ -438,7 +438,7 @@ class ArucoTF(Node):
 
     def calculate_rectangle_area(self, coordinates: np.ndarray) -> Tuple[float, float]:
         area = 0.0
-        width = 0.0 
+        width = 0.0
         corners = coordinates.reshape(4, 2)
         top_left = corners[0]
         top_right = corners[1]
@@ -460,7 +460,7 @@ class ArucoTF(Node):
         t.child_frame_id = f"camera_{aruco_info['id']}"
 
         t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = aruco_info['position']
-      
+
             # Marker is standing vertical (Your original working values)
         qx, qy, qz, qw = quaternion_from_euler(1.571, 2.355, 0.0)
         t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = (qx, qy, qz, qw)
@@ -487,12 +487,12 @@ class ArucoTF(Node):
                     # Marker is lying flat on the ground.
                     # You likely need to rotate X by 90 degrees compared to your vertical setup.
                     # Try this (Standard Flat):
-                    qx, qy, qz, qw = quaternion_from_euler(1.571, 3.14, 0.0) 
-                    
+                    qx, qy, qz, qw = quaternion_from_euler(1.571, 3.14, 0.0)
+
                     # NOTE: If the above orientation isn't perfect, try adjusting the Pitch (middle value)
                     # e.g., quaternion_from_euler(1.571, -1.571, 1.571)
                 else:
-                    # Marker is horizontal 
+                    # Marker is horizontal
                     qx, qy, qz, qw = quaternion_from_euler(3.14, 0.0, -1.57)
                 t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = (qx, qy, qz, qw)
 
