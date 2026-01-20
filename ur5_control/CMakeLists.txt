@@ -33,9 +33,9 @@ install(PROGRAMS
     RENAME ebot_nav_task5
 )
 install(PROGRAMS
-    src/task4a_perception.py
+    src/task5_manipulation.py
     DESTINATION lib/${PROJECT_NAME}
-    RENAME task4a_perception
+    RENAME task5_manipulation
 )
 install(PROGRAMS
     src/shape_detector_task5.py
