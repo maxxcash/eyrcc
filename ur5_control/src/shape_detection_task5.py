@@ -179,13 +179,13 @@ class PlantDetectionNode(Node):
         if self.current_seq_idx >= len(self.TARGET_SEQUENCE): return
 
         target_shape = self.TARGET_SEQUENCE[self.current_seq_idx]
-        
+
         try:
             current_release_time = self.RELEASE_TIMES[self.current_seq_idx]
         except IndexError:
             current_release_time = 15.0
 
-        # STEP 1: DETECT & STORE
+        # --- MODIFIED LOGIC: Detect, Latch, AND Publish Immediately ---
         if self.stored_shape_data is None:
             for name, local_pos, (gx, gy), color, dist in detected_objects:
                 if target_shape in name:
@@ -194,53 +194,48 @@ class PlantDetectionNode(Node):
                     if "SQUARE" in name: label = "BAD_HEALTH"
                     elif "TRIANGLE" in name: label = "FERTILIZER_REQUIRED"
                     elif "PENTAGON" in name: label = "DOCK_STATION"
-                    
+
+                    # 1. Store the data
                     self.stored_shape_data = {
                         'gx': gx,
                         'gy': gy,
                         'plant_id': plant_id,
                         'label': label
                     }
-                    self.get_logger().info(f"Shape Found & Latched at X={gx:.2f}. Waiting for alignment...")
-                    break 
-
-        # STEP 2: CHECK ALIGNMENT (SWAPPED to X)
-        if self.stored_shape_data is not None and not self.target_locked:
-            rx, ry, _ = self.robot_pose
-            
-            # --- SWAP: Use Stored X and Robot X ---
-            shape_x = self.stored_shape_data['gx']
-            x_diff = abs(rx - shape_x)
-            
-            if x_diff < self.ALIGNMENT_TOLERANCE:
-                if self.published_count < 1:
-                    label = self.stored_shape_data['label']
-                    plant_id = self.stored_shape_data['plant_id']
                     
-                    # --- SWAP: Send (Label, RobotY, ShapeX, ID) ---
-                    # We send ShapeX as the target for the nav node to stop at
+                    self.get_logger().info(f"Shape {name} Found at X={gx:.2f}. Publishing Target IMMEDIATELY.")
+
+                    # 2. Publish IMMEDIATELY (Do not wait for alignment)
+                    rx, ry, _ = self.robot_pose
                     msg = String()
-                    data_str = f"{label},{ry:.2f},{shape_x:.2f},{plant_id}"
+                    # Sending ShapeX (gx) as the target for the navigator
+                    data_str = f"{label},{ry:.2f},{gx:.2f},{plant_id}"
                     msg.data = data_str
                     self.pub_status.publish(msg)
                     
-                    self.get_logger().info(f"ALIGNED -> SENT RAW REQ: {data_str}")
-                    self.published_count += 1
+                    self.get_logger().info(f"SENT REQ: {data_str}")
                     
+                    # 3. Lock the target immediately so we don't spam or switch targets
                     self.target_locked = True
                     self.lock_time = self.get_clock().now()
-                    self.get_logger().info(f"Target Locked. Waiting {current_release_time}s...")
+                    self.published_count = 1 
+                    break
 
-        # STEP 3: WAIT & RESET
+        # --- STEP 3: WAIT & RESET (Standard Timer Logic) ---
         if self.target_locked:
             elapsed = (self.get_clock().now() - self.lock_time).nanoseconds * 1e-9
+            
+            # Optional: Feedback while waiting
+            if elapsed < 1.0:
+                 self.get_logger().info(f"Waiting for robot to execute stop... ({elapsed:.1f}s)")
+
             if elapsed > current_release_time:
                 self.get_logger().info(f"--- {current_release_time}s passed. Next Task. ---")
                 self.current_seq_idx += 1
                 self.target_locked = False
                 self.lock_time = None
-                self.published_count = 0 
-                self.stored_shape_data = None 
+                self.published_count = 0
+                self.stored_shape_data = None
 
     def get_global_coords(self, local_x, local_y):
         rx, ry, theta = self.robot_pose
