@@ -225,7 +225,7 @@ class HybridArmControl(Node):
         
         Kp = 2.0  
         cmd_vels = error * Kp
-        cmd_vels = np.clip(cmd_vels, -1.0, 1.0) 
+        cmd_vels = np.clip(cmd_vels, -0.1, 0.1) 
         
         msg = JointJog()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -237,11 +237,14 @@ class HybridArmControl(Node):
         return False
 
     # --- HELPER: CARTESIAN MOVE ---
-    def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0):
+    # --- HELPER: CARTESIAN MOVE (With Speed Control) ---
+    def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0, speed_gain=2.0, max_speed=0.1):
         try:
+            # 1. Get Transform
             trans = self.tf_buffer.lookup_transform('base_link', frame_name, rclpy.time.Time())
             ee_trans = self.tf_buffer.lookup_transform('base_link', 'wrist_3_link', rclpy.time.Time())
             
+            # 2. Calculate Positions
             target_pos = np.array([
                 trans.transform.translation.x, 
                 trans.transform.translation.y + y_offset, 
@@ -254,20 +257,36 @@ class HybridArmControl(Node):
                 ee_trans.transform.translation.z
             ])
             
+            # 3. Calculate Error
             error = target_pos - current_pos
             distance = np.linalg.norm(error)
 
+            # Check Tolerance (Stop if close enough)
             if distance < 0.03: 
                 self.stop_robot()
                 return True
             
+            # 4. Calculate Raw Velocity (P-Controller)
+            vel_x = error[0] * speed_gain
+            vel_y = error[1] * speed_gain
+            vel_z = error[2] * speed_gain
+
+            # 5. Speed Clipping (Safety Limit)
+            current_speed = np.sqrt(vel_x**2 + vel_y**2 + vel_z**2)
+            if current_speed > max_speed:
+                scale_factor = max_speed / current_speed
+                vel_x *= scale_factor
+                vel_y *= scale_factor
+                vel_z *= scale_factor
+
+            # 6. Publish TwistStamped
             twist_msg = TwistStamped()
             twist_msg.header.stamp = self.get_clock().now().to_msg()
             twist_msg.header.frame_id = "base_link"
             
-            twist_msg.twist.linear.x = error[0] * 2.0
-            twist_msg.twist.linear.y = error[1] * 2.0
-            twist_msg.twist.linear.z = error[2] * 2.0
+            twist_msg.twist.linear.x = vel_x
+            twist_msg.twist.linear.y = vel_y
+            twist_msg.twist.linear.z = vel_z
             
             self.pub_twist.publish(twist_msg)
             return False
