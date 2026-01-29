@@ -42,4 +42,9 @@ install(PROGRAMS
     DESTINATION lib/${PROJECT_NAME}
     RENAME shape_detector_task5
 )
+install(PROGRAMS
+    src/fruit_manipulation.py
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME fruit_manipulation
+)
 ament_package()
