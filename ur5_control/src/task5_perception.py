@@ -37,7 +37,7 @@ class Detection(Node):
         # --- CONFIGURATION ---
         self.team_id = '1425'  # Update your Team ID here
         self.max_fruits = 3
-        self.persistence_threshold = 25.0
+        self.persistence_threshold = 70.0
         self.distance_threshold = 5.0
         self.timeout_threshold = 500.0
 
@@ -57,8 +57,8 @@ class Detection(Node):
 
         # Subscribers
         self.rgb_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
-        self.depth_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
-        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
+        self.depth_sub = self.create_subscription(Image, 'camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
+        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera/camera_info', self.camera_info_callback, 10)
 
         # Tracking State
         self.tracked_fruits = {}   
@@ -245,9 +245,9 @@ class ArucoTF(Node):
         
         self.team_id = '1425'  # Update Team ID
 
-        self.color_cam_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.colorimagecb, 10)
-        self.depth_cam_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depthimagecb, 10)
-        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
+        self.color_cam_sub = self.create_subscription(Image, '/camera/image_raw', self.colorimagecb, 10)
+        self.depth_cam_sub = self.create_subscription(Image, '/camera/depth/image_raw', self.depthimagecb, 10)
+        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera_info', self.camera_info_callback, 10)
 
         self.cv_image = None
         self.depth_image = None
