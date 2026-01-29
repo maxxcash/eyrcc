@@ -37,12 +37,12 @@ class HybridArmControl(Node):
 
         # Fixed Joint Angles
         self.aruco_pick = np.array([-4.9, -0.9, -2.122, -0.057, 1.570, 0.0])
-        self.aruco_drop = np.array([-2.941, -2.0, -1.2, -1.265, 1.570, 0.15])
+        self.aruco_drop = np.array([-2.941, -2.120, -1.2, -1.390, 1.570, 0.15])
         self.home_pos = np.array([-3.14, -0.59, -2.49, -0.057, 1.57, 0.0])
         
         self.bad_fruit_pick = np.array([-1.50, -1.20, -1.94, -1.557, 1.57, 0.0])
-        self.bad_fruit_intermidiate = np.array([-0.577, -1.20, -1.94, -1.557, 1.57, 0.0])
-        self.bad_fruit_drop = np.array([0.15, -2.7, -0.7, -1.1, 1.57, 0.0]) 
+        self.bad_fruit_intermidiate = np.array([-0.470, -1.95, -1.1, -1.469, 1.57, 0.0])
+        self.bad_fruit_drop = np.array([0.15, -2.15, -1.2, -1.469, 1.57, 0.0]) 
 
         # State Variables
         self.current_joints = np.zeros(6)
@@ -84,12 +84,12 @@ class HybridArmControl(Node):
                 self.step = 1
 
         elif self.step == 1:
-            if self.servo_to_target("1425_fertilizer_1", y_offset=0.05):
+            if self.servo_to_target("1425_fertilizer_1", y_offset=0.0):
                 self.get_logger().info("Hovering ArUco. Descending...")
                 self.step = 2
 
         elif self.step == 2:
-            if self.servo_to_target("1425_fertilizer_1", y_offset=0.01):
+            if self.servo_to_target("1425_fertilizer_1", y_offset=0.0):
                 self.control_magnet(True)
                 # [NEW] Log force to verify contact
                 self.get_logger().info(f"Magnet ON. Current Force: {self.current_force_z:.2f}") 
@@ -124,13 +124,13 @@ class HybridArmControl(Node):
                 self.step = 8
 
         elif self.step == 8:
-            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.01):
+            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.0):
                 self.control_magnet(True)
                 self.get_logger().info(f"Magnet ON (Fruit 1). Force: {self.current_force_z:.2f}")
                 self.step = 9
 
         elif self.step == 9:
-            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.1):      
+            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.0):      
                 self.step = 10
 
         elif self.step == 10:
@@ -153,13 +153,13 @@ class HybridArmControl(Node):
         # ... (Bad Fruit 2 & 3 - Logic remains same) ...
 
         elif self.step == 14:
-             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.01):
+             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.0):
                 self.control_magnet(True)
                 self.get_logger().info(f"Magnet ON (Fruit 2). Force: {self.current_force_z:.2f}")
                 self.step = 15
         
         elif self.step == 15:
-            if self.servo_to_target("1425_bad_fruit_2", z_offset=0.1):      
+            if self.servo_to_target("1425_bad_fruit_2", z_offset=0.0):      
                 self.step = 16
 
         elif self.step == 16:
@@ -181,13 +181,13 @@ class HybridArmControl(Node):
 
         # ... Bad Fruit 3 ...
         elif self.step == 20:
-             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.01):
+             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.0):
                 self.control_magnet(True)
                 self.get_logger().info(f"Magnet ON (Fruit 3). Force: {self.current_force_z:.2f}")
                 self.step = 21
 
         elif self.step == 21:
-             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.1):      
+             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.0):      
                 self.step = 22
         
         elif self.step == 22:
@@ -238,7 +238,7 @@ class HybridArmControl(Node):
 
     # --- HELPER: CARTESIAN MOVE ---
     # --- HELPER: CARTESIAN MOVE (With Speed Control) ---
-    def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0, speed_gain=2.0, max_speed=0.1):
+    def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0, speed_gain=1.0, max_speed=0.1):
         try:
             # 1. Get Transform
             trans = self.tf_buffer.lookup_transform('base_link', frame_name, rclpy.time.Time())
