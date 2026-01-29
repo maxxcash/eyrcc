@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(ur5_control)
+project(1425_ur5_control)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -38,7 +38,7 @@ install(PROGRAMS
     RENAME task5_manipulation
 )
 install(PROGRAMS
-    src/shape_detector_task5.py
+    src/shape_detection_task5.py
     DESTINATION lib/${PROJECT_NAME}
     RENAME shape_detector_task5
 )
