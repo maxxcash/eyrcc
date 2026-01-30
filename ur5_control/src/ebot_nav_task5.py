@@ -30,7 +30,7 @@ START_DRIVE_ANGLE = math.radians(15)
 HOLD_TIME = 0.4
 LOOP_HZ = 30.0
 KP_LIN = 1.1; KP_ANG = 1.5   
-MAX_LIN = 0.5; MAX_ANG = 1.0
+MAX_LIN = 0.3; MAX_ANG = 0.5
 MAX_LIN_ACCEL = 0.8; MAX_ANG_ACCEL = 3.0
 MIN_LIN = 0.08; MIN_ANG = 0.15  
 ALPHA = 0.55
@@ -100,7 +100,7 @@ class WaypointNav(Node):
                     
                     # Duration Logic
                     is_dock = "DOCK" in label.upper()
-                    self.current_stop_duration = 2.0 if is_dock else 10.0
+                    self.current_stop_duration = 10.0 if is_dock else 5.0
                     dur_str = "2s" if is_dock else "10s"
 
                     # Stop Logic (With "Overshoot" Safety)
