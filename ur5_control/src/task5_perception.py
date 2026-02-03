@@ -395,7 +395,9 @@ class ArucoTF(Node):
             t.header.frame_id = "base_link"
             t.child_frame_id = f"{teamid}_fertilizer_1"
 
-            t.transform.translation = trans.transform.translation
+            t.transform.translation.x = trans.transform.translation.x + 0
+            t.transform.translation.y = trans.transform.translation.y + 0
+            t.transform.translation.z = trans.transform.translation.z + 0
 
             # Fixed orientation for UR5 grasp (as per eYRC)
             if aruco_info['is_flat']:
