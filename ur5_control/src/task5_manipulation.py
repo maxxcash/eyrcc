@@ -45,7 +45,7 @@ class HybridArmControl(Node):
         
         self.bad_fruit_pick = np.array([-1.50, -1.20, -1.94, -1.557, 1.57, 0.0])
         self.bad_fruit_intermidiate = np.array([-0.470, -1.95, -1.1, -1.469, 1.57, 0.0])
-        self.bad_fruit_drop = np.array([0.15, -2.15, -1.2, -1.469, 1.57, 0.0]) 
+        self.bad_fruit_drop = np.array([0.06, -2.10, -1.2, -1.469, 1.57, 0.0]) 
 
         # State Variables
         self.current_joints = np.zeros(6)
