@@ -10,6 +10,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32  # <--- NEW: For Force Monitoring
 from tf2_ros import Buffer, TransformListener
 import numpy as np
+from std_msgs.msg import Float64MultiArray
 
 class HybridArmControl(Node):
     def __init__(self):
@@ -25,7 +26,8 @@ class HybridArmControl(Node):
         # [NEW] Force Monitoring Subscriber
         # Based on your screenshot: Topic /net_wrench, Type Float32
         self.create_subscription(Float32, '/net_wrench', self.force_cb, 10)
-
+        self.current_tcp_pos = np.zeros(3)
+        self.tcp_sub = self.create_subscription(Float64MultiArray, '/tcp_pose_raw', self.tcp_cb, 10)
         # --- 3. CONFIGURATION ---
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -71,6 +73,10 @@ class HybridArmControl(Node):
         self.current_force_z = msg.data
         # Uncomment below to debug force values live in terminal:
         # self.get_logger().info(f'Force Z: {self.current_force_z:.2f}', throttle_duration_sec=1.0)
+    
+    def tcp_cb(self, msg):
+        # msg.data contains [x, y, z, rx, ry, rz]
+        self.current_tcp_pos = np.array(msg.data[:3])
 
     def mission_loop(self):
         if not self.joints_received:
@@ -248,43 +254,36 @@ class HybridArmControl(Node):
 
     # --- HELPER: CARTESIAN MOVE ---
     # --- HELPER: CARTESIAN MOVE (With Speed Control) ---
-    def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0, speed_gain=1.0, max_speed=0.1):
+    def servo_to_target(self, frame_name, y_offset=0.0, z_offset=0.0):
         try:
-            # 1. Get Transform
+            # Get target from your perception TF
             trans = self.tf_buffer.lookup_transform('base_link', frame_name, rclpy.time.Time())
-            ee_trans = self.tf_buffer.lookup_transform('base_link', 'wrist_3_link', rclpy.time.Time())
             
-            # 2. Calculate Positions
             target_pos = np.array([
                 trans.transform.translation.x, 
                 trans.transform.translation.y + y_offset, 
                 trans.transform.translation.z + z_offset
             ])
+
+            # Use TCP Pose as current position instead of lookup_transform for wrist_3
+            current_pos = self.current_tcp_pos
             
-            current_pos = np.array([
-                ee_trans.transform.translation.x, 
-                ee_trans.transform.translation.y, 
-                ee_trans.transform.translation.z
-            ])
-            
-            # 3. Calculate Error
             error = target_pos - current_pos
             distance = np.linalg.norm(error)
 
-            # Check Tolerance (Stop if close enough)
-            if distance < 0.03: 
+            if distance < 0.01: # You can now use a tighter tolerance (1cm)
                 self.stop_robot()
                 return True
             
             # 4. Calculate Raw Velocity (P-Controller)
-            vel_x = error[0] * speed_gain
-            vel_y = error[1] * speed_gain
-            vel_z = error[2] * speed_gain
+            vel_x = error[0] * 1.0
+            vel_y = error[1] * 1.0
+            vel_z = error[2] * 1.0
 
             # 5. Speed Clipping (Safety Limit)
             current_speed = np.sqrt(vel_x**2 + vel_y**2 + vel_z**2)
-            if current_speed > max_speed:
-                scale_factor = max_speed / current_speed
+            if current_speed > 0.1:
+                scale_factor = 0.1 / current_speed
                 vel_x *= scale_factor
                 vel_y *= scale_factor
                 vel_z *= scale_factor
