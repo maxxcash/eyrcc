@@ -40,7 +40,7 @@ install(PROGRAMS
 install(PROGRAMS
     src/shape_detection_task5.py
     DESTINATION lib/${PROJECT_NAME}
-    RENAME shape_detector_task5
+    RENAME shape_detection_task5
 )
 install(PROGRAMS
     src/fruit_manipulation.py
