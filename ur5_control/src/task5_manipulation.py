@@ -91,7 +91,7 @@ class HybridArmControl(Node):
                 self.step = 1
 
         elif self.step == 1:
-            if self.servo_to_target("1425_fertilizer_1", y_offset=0.0):
+            if self.servo_to_target("1425_fertilizer_1", y_offset=0.1):
                 self.get_logger().info("Hovering ArUco. Descending...")
                 self.step = 2
 
@@ -140,7 +140,7 @@ class HybridArmControl(Node):
                 self.step = 8
 
         elif self.step == 8:
-            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.0):
+            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.1):
                 self.step = 9
 
         elif self.step == 9:
@@ -169,7 +169,7 @@ class HybridArmControl(Node):
         # ... (Bad Fruit 2 & 3 - Logic remains same) ...
 
         elif self.step == 14:
-             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.0):
+             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.1):
                 self.step = 15
         
         elif self.step == 15:
@@ -197,7 +197,7 @@ class HybridArmControl(Node):
 
         # ... Bad Fruit 3 ...
         elif self.step == 20:
-             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.0):
+             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.1):
                self.step = 21
 
         elif self.step == 21:
