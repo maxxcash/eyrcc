@@ -44,8 +44,8 @@ class Detection(Node):
         # --- CONFIGURATION ---
         self.team_id = '1425'  # Update your Team ID here
         self.max_fruits = 3
-        self.persistence_threshold = 10.0
-        self.distance_threshold = 0.1
+        self.persistence_threshold = 1.0
+        self.distance_threshold = 10.0
         self.timeout_threshold = 500.0
 
         # --- SETUP ---
@@ -395,9 +395,9 @@ class ArucoTF(Node):
             t.header.frame_id = "base_link"
             t.child_frame_id = f"{teamid}_fertilizer_1"
 
-            t.transform.translation.x = trans.transform.translation.x + 0
+            t.transform.translation.x = trans.transform.translation.x - 0.05
             t.transform.translation.y = trans.transform.translation.y + 0
-            t.transform.translation.z = trans.transform.translation.z + 0
+            t.transform.translation.z = trans.transform.translation.z + 0.05
 
             # Fixed orientation for UR5 grasp (as per eYRC)
             if aruco_info['is_flat']:
