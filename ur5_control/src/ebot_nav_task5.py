@@ -8,28 +8,25 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 import math
 
-# -------------------------- WAYPOINTS (HARDWARE X-AXIS) -----------------------
-# Sourced from your 'ebot_nav_task5.py'
+# -------------------------- CONFIG -----------------------
 WAYPOINTS = [      
     (0.0, 0.0, -1.3),
-    (0.2, -1.67, 0.0),
+    (0.2, -1.69, 0.0),
     (5.0, -1.65, 1.571),
     (4.8,  1.78, 3.14),
     (0.1,  1.78, -1.57),
     (0.1, 0.0, -3.14),
     (5.0, 0.0, 0.0) 
 ]
-
 FINAL_REVERSE_TARGET_VAL = 0.2  
 
-# ------------------------ TUNING -----------------------
-PUBLISH_DELAY = 1.0         
+PUBLISH_DELAY = 1.0          
 POSE_TOL = 0.05
 YAW_TOL = math.radians(5)  
 START_DRIVE_ANGLE = math.radians(15) 
-HOLD_TIME = 0.4
+HOLD_TIME = 0.9
 LOOP_HZ = 30.0
-KP_LIN = 1.1; KP_ANG = 1.5   
+KP_LIN = 1.1; KP_ANG = 1.5    
 MAX_LIN = 0.3; MAX_ANG = 0.5
 MAX_LIN_ACCEL = 0.8; MAX_ANG_ACCEL = 3.0
 MIN_LIN = 0.08; MIN_ANG = 0.15  
@@ -46,7 +43,6 @@ class WaypointNav(Node):
 
     def __init__(self):
         super().__init__("ebot_nav_hw")
-        # HARDWARE MODE
         self.set_parameters([Parameter("use_sim_time", Parameter.Type.BOOL, False)])
 
         self.sub_odom = self.create_subscription(Odometry, "/odom", self.cb_odom, 10)
@@ -66,16 +62,16 @@ class WaypointNav(Node):
         self.last_yaw_err = 0.0
         
         # Stop Logic
-        self.target_x = None       
-        self.target_label = ""     
-        self.stop_condition = 0    
+        self.target_x = None        
+        self.target_label = ""      
+        self.stop_condition = 0     
         self.pending_msg_data = None 
-        self.is_paused = False           
+        self.is_paused = False            
         self.pause_start_time = 0.0
         self.current_stop_duration = 2.0 
 
         self.last_time = self.time_now()
-        print(f"\n{'='*40}\n[NAV] HARDWARE READY. Waypoint 0/{len(WAYPOINTS)}\n{'='*40}")
+        self.get_logger().info(f"\n{'='*40}\n[NAV] HARDWARE READY. Waypoint Sequence Start.\n{'='*40}")
 
     def time_now(self):
         t = self.get_clock().now()
@@ -98,19 +94,17 @@ class WaypointNav(Node):
                     self.target_label = label
                     self.pending_msg_data = msg.data
                     
-                    # Duration Logic
                     is_dock = "DOCK" in label.upper()
                     self.current_stop_duration = 10.0 if is_dock else 5.0
-                    dur_str = "2s" if is_dock else "10s"
+                    
+                    # LOG: Stop Request Received
+                    self.get_logger().warn(f" [NAV] STOP REQ RECEIVED: {label} (At X={detected_x:.2f})")
 
-                    # Stop Logic (With "Overshoot" Safety)
                     if self.target_x > self.x:
                         self.stop_condition = 1 
-                        self.get_logger().info(f"[NAV] 🛑 REQUEST: Stop at X={self.target_x:.2f} (Current: {self.x:.2f})")
                     else:
-                        # Target is behind us -> STOP NOW
                         self.stop_condition = 1 
-                        self.get_logger().warn(f"[NAV] ⚠️ OVERSHOOT: Target {self.target_x:.2f} is behind! Stopping ASAP.")
+                        self.get_logger().error(f"[NAV]  OVERSHOOT! Target {detected_x:.2f} is behind us. Stopping ASAP.")
 
         except ValueError: pass
 
@@ -143,43 +137,45 @@ class WaypointNav(Node):
             self.stop()
             elapsed = now - self.pause_start_time
 
-            # Publish Status Report
             if elapsed >= PUBLISH_DELAY and self.pending_msg_data:
                 final_msg = String()
                 final_msg.data = self.pending_msg_data
                 self.pub_final_status.publish(final_msg)
+                
+                # LOG: Publishing Data
+                self.get_logger().info(f" [NAV] PUBLISHING: {self.pending_msg_data} (Wait left: {self.current_stop_duration - elapsed:.1f}s)")
                 self.pending_msg_data = None 
-                self.get_logger().info(f"[NAV] 📤 REPORT SENT. Waiting {self.current_stop_duration}s...")
 
-            # Resume
             if elapsed >= self.current_stop_duration:
-                self.get_logger().info("[NAV] ▶️ RESUMING.")
+                # LOG: Resuming
+                self.get_logger().info("[NAV]   RESUMING MISSION.")
                 self.is_paused = False
                 self.target_x = None 
             return 
 
         # --- 2. STOP CHECK ---
         if self.target_x is not None:
-            # Stop if we crossed the X target OR if we were already past it (Overshoot fix)
             if (self.stop_condition == 1 and self.x >= self.target_x) or \
                (self.stop_condition == -1 and self.x <= self.target_x):
                 
-                self.get_logger().info(f"[NAV] 🎯 REACHED X={self.x:.2f}. Pausing.")
                 self.stop()
                 self.is_paused = True
                 self.pause_start_time = now
+                # LOG: Target Reached
+                self.get_logger().info(f"[NAV]  TARGET REACHED (X={self.x:.2f}). PAUSING.")
                 return
 
         # --- 3. WAYPOINT LOGIC ---
         if self.wi >= len(WAYPOINTS):
             if self.state != "FINAL_REVERSE":
-                self.get_logger().info("[NAV] 🏁 COURSE COMPLETE. Reversing...")
+                self.get_logger().info("[NAV]  COURSE COMPLETE. Reversing to Dock...")
                 self.state = "FINAL_REVERSE"
             
             if self.x > FINAL_REVERSE_TARGET_VAL: 
                 self.cmd(self.ramp_linear(-0.50, dt), 0.0)
             else:
                 self.stop()
+                self.get_logger().info("[NAV]  SHUTDOWN.")
                 rclpy.shutdown()
             return
 
@@ -189,7 +185,7 @@ class WaypointNav(Node):
         yaw_err = normalize(math.atan2(dy, dx) - self.yaw)
         final_yaw_err = normalize(gyaw - self.yaw)
 
-        # STATE MACHINE WITH LOGGING
+        # STATE MACHINE
         if self.state == "ROTATE":
             if abs(yaw_err) > START_DRIVE_ANGLE:
                 ang = clamp(KP_ANG * yaw_err, -MAX_ANG, MAX_ANG)
@@ -198,7 +194,8 @@ class WaypointNav(Node):
             else:
                 self.stop()
                 self.state = "DRIVE"
-                self.get_logger().info(f"[NAV] 🚗 DRIVING to WP {self.wi+1}")
+                # LOG: Transition to Drive
+                self.get_logger().info(f"[NAV]  DRIVING to WP {self.wi+1} (Dist: {dist:.2f}m)")
 
         elif self.state == "DRIVE":
             if dist > POSE_TOL:
@@ -209,6 +206,8 @@ class WaypointNav(Node):
             else:
                 self.stop()
                 self.state = "ALIGN"
+                # LOG: Transition to Align
+                self.get_logger().info(f"[NAV]  ALIGNING heading at WP {self.wi+1}")
 
         elif self.state == "ALIGN":
             if abs(final_yaw_err) > YAW_TOL:
@@ -221,15 +220,14 @@ class WaypointNav(Node):
                 self.stop()
                 self.hold_start = now
                 self.state = "HOLD"
-                self.get_logger().info(f"[NAV] ✅ WP {self.wi+1} REACHED. Aligning...")
 
         elif self.state == "HOLD":
             self.stop()
             if now - self.hold_start >= HOLD_TIME:
+                # LOG: Waypoint Done
+                self.get_logger().info(f"[NAV]  WAYPOINT {self.wi+1} COMPLETE. Progress: {self.wi+1}/{len(WAYPOINTS)}")
                 self.wi += 1
                 self.state = "ROTATE"
-                if self.wi < len(WAYPOINTS):
-                    self.get_logger().info(f"[NAV] 🔄 ROTATING to WP {self.wi+1}")
 
     def cmd(self, l, a): 
         m = Twist(); m.linear.x, m.angular.z = float(l), float(a)
