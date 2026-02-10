@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 
@@ -72,7 +72,7 @@ class HybridArmControl(Node):
         # The message is a simple Float32 representing Z-force
         self.current_force_z = msg.data
         # Uncomment below to debug force values live in terminal:
-        # self.get_logger().info(f'Force Z: {self.current_force_z:.2f}', throttle_duration_sec=1.0)
+        self.get_logger().info(f'Force Z: {self.current_force_z:.2f}', throttle_duration_sec=1.0)
     
     def tcp_cb(self, msg):
         # msg.data contains [x, y, z, rx, ry, rz]
@@ -87,148 +87,160 @@ class HybridArmControl(Node):
         # ==========================================================
         if self.step == 0:
             if self.move_joints_to(self.aruco_pick):
-                self.get_logger().info("Reached Pre-Pick. Looking for ArUco...")
+                self.get_logger().info("Reached Pre-Pick.")
                 self.step = 1
 
         elif self.step == 1:
-            if self.servo_to_target("1425_fertilizer_1", y_offset=0.1):
-                self.get_logger().info("Hovering ArUco. Descending...")
+            if self.servo_to_target("1425_fertilizer_1", y_offset=0.01):
+                self.control_magnet(True)
+                self.get_logger().info("Hovering ArUco.")
                 self.step = 2
 
         elif self.step == 2:
             if self.servo_to_target("1425_fertilizer_1", y_offset=0.0):
-                self.control_magnet(True)
-                # [NEW] Log force to verify contact
                 self.get_logger().info(f"Magnet ON. Current Force: {self.current_force_z:.2f}") 
                 self.step = 3
 
-        # elif self.step == 1:
-        #     if self.move_joints_to(self.aruco_pick):
-        #        self.step = 2
-
-        # elif self.step == 2:
-        #     if self.move_joints_to(self.aruco):
-        #         self.step = 3
-
         elif self.step == 3:
-            if self.move_joints_to(self.aruco_pick):
-                # [NEW] Verify payload weight
-                self.get_logger().info(f"Lifted. Payload Check (Force): {self.current_force_z:.2f}")
+            if self.servo_to_target("1425_fertilizer_1", z_offset=0.005):
                 self.step = 4
 
-
         elif self.step == 4:
-            if self.move_joints_to(self.home_pos):
+            if self.move_joints_to(self.aruco_pick):
+                self.get_logger().info(f"Lifted. ")
                 self.step = 5
 
+
         elif self.step == 5:
-            if self.move_joints_to(self.aruco_drop):
-                self.control_magnet(False)
-                self.get_logger().info("Dropped ArUco.")
+            if self.move_joints_to(self.home_pos):
+                self.get_logger().info("Home.")
                 self.step = 6
 
         elif self.step == 6:
+            if self.move_joints_to(self.aruco_drop):
+                self.get_logger().info("Positioned over Drop.")
+                self.step = 7
+
+
+        elif self.step == 7 :
+            if self.servo_to_target("1425_bot", z_offset=0.1):
+                self.control_magnet(False)
+                self.get_logger().info("Dropped ArUco.")
+                self.step = 8
+
+        elif self.step == 8 :
             if self.move_joints_to(self.home_pos):
                 self.get_logger().info("Home. Starting Bad Fruit...")
-                self.step = 7
+                self.step = 9
 
         # ==========================================================
         # SEQUENCE 2: BAD FRUIT 
         # ==========================================================
-        elif self.step == 7:
-            if self.move_joints_to(self.bad_fruit_pick):
-                self.step = 8
-
-        elif self.step == 8:
-            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.1):
-                self.step = 9
-
         elif self.step == 9:
-            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.0):
-                self.control_magnet(True)
-                self.get_logger().info(f"Magnet ON (Fruit 1). Force: {self.current_force_z:.2f}")
+            if self.move_joints_to(self.bad_fruit_pick):
                 self.step = 10
 
         elif self.step == 10:
-            if self.move_joints_to(self.bad_fruit_intermidiate): 
+            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.02):
+                self.control_magnet(True)
                 self.step = 11
-        
-        elif self.step == 11:
-            if self.move_joints_to(self.bad_fruit_drop): 
-                self.control_magnet(False)
-                self.step = 12
 
+        elif self.step == 11:
+            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.0):
+                self.get_logger().info(f"Magnet ON (Fruit 1). Force: {self.current_force_z:.2f}")
+                self.step = 12
+        
         elif self.step == 12:
-            if self.move_joints_to(self.bad_fruit_intermidiate): 
+            if self.servo_to_target("1425_bad_fruit_1", z_offset=0.02):
                 self.step = 13
 
-        elif self.step == 13:
-            if self.move_joints_to(self.bad_fruit_pick):
+        elif self.step == 13    :
+            if self.move_joints_to(self.bad_fruit_intermidiate): 
                 self.step = 14
-
-        # ... (Bad Fruit 2 & 3 - Logic remains same) ...
-
-        elif self.step == 14:
-             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.1):
-                self.step = 15
         
+        elif self.step == 14:
+            if self.move_joints_to(self.bad_fruit_drop): 
+                self.control_magnet(False)
+                self.step = 15
+
         elif self.step == 15:
-            if self.servo_to_target("1425_bad_fruit_2", z_offset=0.0):  
-                self.control_magnet(True)
-                self.get_logger().info(f"Magnet ON (Fruit 2). Force: {self.current_force_z:.2f}")    
+            if self.move_joints_to(self.bad_fruit_intermidiate): 
                 self.step = 16
 
         elif self.step == 16:
-            if self.move_joints_to(self.bad_fruit_intermidiate): 
+            if self.move_joints_to(self.bad_fruit_pick):
                 self.step = 17
-        
-        elif self.step == 17:
-            if self.move_joints_to(self.bad_fruit_drop): 
-                self.control_magnet(False)
-                self.step = 18
 
+        elif self.step == 17:
+             if self.servo_to_target("1425_bad_fruit_2", z_offset=0.02):
+                self.control_magnet(True)
+                self.step = 18
+        
         elif self.step == 18:
-            if self.move_joints_to(self.bad_fruit_intermidiate): 
+            if self.servo_to_target("1425_bad_fruit_2", z_offset=0.0):  
+                self.get_logger().info(f"Magnet ON (Fruit 2). Force: {self.current_force_z:.2f}")    
                 self.step = 19
 
         elif self.step == 19:
-            if self.move_joints_to(self.bad_fruit_pick):
+            if self.servo_to_target("1425_bad_fruit_2", z_offset=0.02):    
                 self.step = 20
 
-        # ... Bad Fruit 3 ...
         elif self.step == 20:
-             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.1):
-               self.step = 21
-
-        elif self.step == 21:
-             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.0):   
-                self.control_magnet(True)
-                self.get_logger().info(f"Magnet ON (Fruit 3). Force: {self.current_force_z:.2f}")   
-                self.step = 22
+            if self.move_joints_to(self.bad_fruit_intermidiate): 
+                self.step = 21
         
+        elif self.step == 21:
+            if self.move_joints_to(self.bad_fruit_drop): 
+                self.control_magnet(False)
+                self.step = 22
+
         elif self.step == 22:
             if self.move_joints_to(self.bad_fruit_intermidiate): 
                 self.step = 23
-        
+
         elif self.step == 23:
-            if self.move_joints_to(self.bad_fruit_drop): 
-                self.control_magnet(False)
+            if self.move_joints_to(self.bad_fruit_pick):
                 self.step = 24
-        
+
+        # ... Bad Fruit 3 ...
         elif self.step == 24:
-            if self.move_joints_to(self.bad_fruit_intermidiate): 
-                self.step = 25
+             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.02):
+               self.control_magnet(True)
+               self.step = 25
 
         elif self.step == 25:
-            if self.move_joints_to(self.bad_fruit_pick):
+             if self.servo_to_target("1425_bad_fruit_3", z_offset=0.0):   
+                
+                self.get_logger().info(f"Magnet ON (Fruit 3). Force: {self.current_force_z:.2f}")   
                 self.step = 26
-
+        
         elif self.step == 26:
-            if self.move_joints_to(self.home_pos):
-                self.get_logger().info("All Missions Complete.")
-                self.step = 27  
+            if self.servo_to_target("1425_bad_fruit_3", z_offset=0.02):    
+                self.step = 27
 
         elif self.step == 27:
+            if self.move_joints_to(self.bad_fruit_intermidiate): 
+                self.step = 28
+        
+        elif self.step == 28:
+            if self.move_joints_to(self.bad_fruit_drop): 
+                self.control_magnet(False)
+                self.step = 29
+        
+        elif self.step == 29:
+            if self.move_joints_to(self.bad_fruit_intermidiate): 
+                self.step = 30
+
+        elif self.step == 30:
+            if self.move_joints_to(self.bad_fruit_pick):
+                self.step = 31
+
+        elif self.step == 31:
+            if self.move_joints_to(self.home_pos):
+                self.get_logger().info("All Missions Complete.")
+                self.step = 32  
+
+        elif self.step == 32:
             self.stop_robot()
 
     # --- HELPER: JOINT MOVE ---
@@ -261,7 +273,7 @@ class HybridArmControl(Node):
             
             target_pos = np.array([
                 trans.transform.translation.x, 
-                trans.transform.translation.y + y_offset, 
+                trans.transform.translation.y - y_offset, 
                 trans.transform.translation.z + z_offset
             ])
 
