@@ -10,47 +10,33 @@ from rclpy.duration import Duration
 from rclpy.time import Time
 import cv2
 import numpy as np
-import cv2 
 from scipy.spatial.transform import Rotation as R
 from typing import List, Tuple
 
 # ROS Messages
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, PointStamped
 
 # ROS Utilities
 from cv_bridge import CvBridge, CvBridgeError
 import tf2_ros
+import tf2_geometry_msgs # Required for transforming points
 from tf_transformations import quaternion_from_euler
-import rclpy
-from rclpy.node import Node
-from rclpy.duration import Duration
-from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import TransformStamped
-from cv_bridge import CvBridge
-import tf2_ros
-import numpy as np
-import cv2
-import cv2.aruco as aruco
-from tf_transformations import quaternion_from_euler
-import rclpy.time
-from typing import Tuple
-from scipy.spatial.transform import Rotation as R
 
 class Detection(Node):
     def __init__(self):
         super().__init__('image_depth_subscriber')
         
         # --- CONFIGURATION ---
-        self.team_id = '1425'  # Update your Team ID here
+        self.team_id = '1425' 
         self.max_fruits = 3
         self.persistence_threshold = 1.0
-        self.distance_threshold = 10.0
-        self.timeout_threshold = 500.0
+        self.distance_threshold = 20.0 # Increased slightly for stability
+        self.timeout_threshold = 2.0   # Seconds
 
         # --- SETUP ---
         self.bridge = CvBridge()   
-        self.cv_image = None       
+        self.cv_image = None        
         self.depth_image = None    
 
         # Intrinsic Defaults
@@ -65,7 +51,7 @@ class Detection(Node):
         # Subscribers
         self.rgb_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
         self.depth_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
-        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera/camera_info', self.camera_info_callback, 10)
+        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera_info', self.camera_info_callback, 10)
 
         # Tracking State
         self.tracked_fruits = {}   
@@ -151,9 +137,12 @@ class Detection(Node):
             Y = (full_cy - self.cy) * depth_m / self.fy
             Z = depth_m
 
+            # Position in Camera Frame (Z-forward, X-right, Y-down) -> ROS Optical (Z-forward, X-right, Y-down)
+            # Note: For publishing to ROS TF, we usually align with standard frames.
+            # Here keeping as Optical Frame coordinates:
             current_detections.append({
                 "center": (full_cx, full_cy),
-                "position_3d": (Z, -X, -Y),
+                "position_optical": (X, Y, Z), # Keep as optical for now
                 "width": w
             })
 
@@ -199,11 +188,14 @@ class Detection(Node):
                 cv2.rectangle(output, (cx - w//2, cy - w//2), (cx + w//2, cy + w//2), (0, 255, 0), 2)
                 cv2.putText(output, f"BF_{fid} [OK]", (cx, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                 
-                # Publish TF
+                # TF Publishing
                 fruit_info = info['data']
                 fruit_info['id'] = fid
-                self.publish_tf(fruit_info)
-                self.republish_badfruit_in_base(fruit_info['id'])
+                
+                # 1. Publish Camera -> Fruit
+                self.publish_tf_camera(fruit_info)
+                # 2. Publish Base -> Fruit (using math, not lookup)
+                self.publish_tf_base(fruit_info)
             else:
                 cv2.circle(output, (cx, cy), 5, (0, 0, 255), -1)
 
@@ -218,32 +210,68 @@ class Detection(Node):
         x2, y2, w2, h2 = box2
         return (x1 < x2 + w2 and x1 + w1 > x2) and (y1 < y2 + h2 and y1 + h1 > y2)
     
-    def publish_tf(self, fruit_info):
+    def publish_tf_camera(self, fruit_info):
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = 'camera_link'
         t.child_frame_id = f"cam{fruit_info['id']}"
-        t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = fruit_info['position_3d']
         
-        # Static rotation for fruit
+        # Convert Optical (X-right, Y-down, Z-forward) to ROS Camera Frame (X-forward, Y-left, Z-up) if needed
+        # Assuming you want standard optical frame for this specific TF:
+        x_opt, y_opt, z_opt = fruit_info['position_optical']
+        
+        # Assign to Translation
+        t.transform.translation.x = z_opt
+        t.transform.translation.y = -x_opt
+        t.transform.translation.z = -y_opt
+        
+        # Static rotation
         qx, qy, qz, qw = quaternion_from_euler(1.571, 0.0, 1.571)
         t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = (qx, qy, qz, qw)
         self.tf_broadcaster.sendTransform(t)
 
-    def republish_badfruit_in_base(self, fruit_id):
+    def publish_tf_base(self, fruit_info):
+        # Instead of looking up 'camX', we look up 'camera_link' and transform the point ourselves
         try:
-            trans = self.tf_buffer.lookup_transform("base_link", f"cam{fruit_id}", rclpy.time.Time(), timeout=Duration(seconds=0.5))
+            # 1. Create a PointStamped in camera frame
+            p = PointStamped()
+            p.header.frame_id = "camera_link"
+            p.header.stamp = rclpy.time.Time().to_msg()
+            
+            x_opt, y_opt, z_opt = fruit_info['position_optical']
+            # Map Optical to Camera Link (Z-forward -> X, X-right -> -Y, Y-down -> -Z)
+            p.point.x = z_opt
+            p.point.y = -x_opt
+            p.point.z = -y_opt
+
+            # 2. Transform this point to 'base_link'
+            # Note: This requires base_link -> camera_link to exist
+            if not self.tf_buffer.can_transform("base_link", "camera_link", rclpy.time.Time()):
+                return
+
+            p_base = self.tf_buffer.transform(p, "base_link")
+
+            # 3. Publish the new transform
             t = TransformStamped()
             t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = "base_link"
-            t.child_frame_id = f'{self.team_id}_bad_fruit_{fruit_id}'
-            t.transform.translation = trans.transform.translation
+            t.child_frame_id = f'{self.team_id}_bad_fruit_{fruit_info["id"]}'
             
+            t.transform.translation.x = p_base.point.x
+            t.transform.translation.y = p_base.point.y
+            t.transform.translation.z = p_base.point.z
+            
+            # Orientation for grasping
             qx, qy, qz, qw = quaternion_from_euler(3.14, 0.0, -1.57)
-            t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = (qx, qy, qz, qw)
+            t.transform.rotation.x = qx
+            t.transform.rotation.y = qy
+            t.transform.rotation.z = qz
+            t.transform.rotation.w = qw
+            
             self.tf_broadcaster.sendTransform(t)
+            
         except Exception as e:
-            self.get_logger().warn(f"TF lookup failed for fruit {fruit_id}: {e}")
+            self.get_logger().warn(f"TF Base Transform failed: {e}")
 
 # =========================================================
 # ================= ARUCO TF NODE =========================
@@ -270,88 +298,75 @@ class ArucoTF(Node):
         self.create_subscription(Image, '/camera/camera/color/image_raw', self.color_cb, 10)
         self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_cb, 10)
 
-        # ---------------- ARUCO SETUP (API SAFE) ----------------
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(
-            cv2.aruco.DICT_4X4_50
-        )
-
+        # ---------------- ARUCO SETUP ----------------
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        self.aruco_params = cv2.aruco.DetectorParameters_create()
+        
+        # Check OpenCV version for API compatibility
         if hasattr(cv2.aruco, "ArucoDetector"):
-            # New OpenCV (>= 4.7)
-            self.aruco_params = cv2.aruco.DetectorParameters()
-            self.detector = cv2.aruco.ArucoDetector(
-                self.aruco_dict, self.aruco_params
-            )
+            self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
             self.use_new_api = True
-            self.get_logger().info("Using NEW OpenCV ArUco API")
         else:
-            # Old OpenCV (<= 4.6)  ← eYRC default
             self.aruco_params = cv2.aruco.DetectorParameters_create()
             self.use_new_api = False
-            self.get_logger().info("Using OLD OpenCV ArUco API")
 
     def color_cb(self, msg):
-        self.cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-        if self.depth_image is not None:
-            self.aruco_detection(self.cv_image, self.depth_image)
+        try:
+            self.cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+            if self.depth_image is not None:
+                self.aruco_detection(self.cv_image, self.depth_image)
+        except CvBridgeError:
+            pass
 
     def depth_cb(self, msg):
-        self.depth_image = self.bridge.imgmsg_to_cv2(msg, 'passthrough')
+        try:
+            self.depth_image = self.bridge.imgmsg_to_cv2(msg, 'passthrough')
+        except CvBridgeError:
+            pass
 
-    # ---------------------------------------------------------
-    # ---------------- ARUCO DETECTION ------------------------
-    # ---------------------------------------------------------
     def aruco_detection(self, rgb_image, depth_image):
-
         gray = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2GRAY)
 
-        # Detect markers (API SAFE)
+        # Detect markers
         if self.use_new_api:
             corners, ids, rejected = self.detector.detectMarkers(gray)
         else:
-            corners, ids, rejected = cv2.aruco.detectMarkers(
-                gray,
-                self.aruco_dict,
-                parameters=self.aruco_params
-            )
+            corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.aruco_params)
 
         if ids is None:
             return
 
-        cam_mat = np.array([
-            [915.30, 0.0, 642.72],
-            [0.0, 914.03, 361.97],
-            [0.0, 0.0, 1.0]
-        ])
+        cam_mat = np.array([[self.fx, 0.0, self.cx], [0.0, self.fy, self.cy], [0.0, 0.0, 1.0]])
         dist_mat = np.zeros((5, 1))
-        marker_size = 0.13  # meters
+        marker_size = 0.13 
 
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, marker_size, cam_mat, dist_mat
-        )
+        # Estimate Pose
+        # Note: estimatePoseSingleMarkers is deprecated in 4.7+ but usually still works. 
+        # If it fails, objPoints/SolvePnP is needed. Assuming it works for now:
+        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, marker_size, cam_mat, dist_mat)
 
         for i, marker_id in enumerate(ids.flatten()):
             rvec = rvecs[i]
             tvec = tvecs[i]
 
-            r = R.from_rotvec(rvec.flatten())
-            euler_angles = r.as_euler('xyz', degrees=True)
-            pitch = euler_angles[0]
-            is_flat = 60 < abs(pitch) < 90
-                    
-
-            # -------- STANDARD YAW COMPUTATION --------
+            # Yaw calculation
             R_cam, _ = cv2.Rodrigues(rvec)
             yaw_rad = np.arctan2(R_cam[1, 0], R_cam[0, 0])
             yaw_deg = np.degrees(yaw_rad)
+            
+            # Check flatness for orientation logic
+            r_obj = R.from_rotvec(rvec.flatten())
+            pitch = r_obj.as_euler('xyz', degrees=True)[0]
+            is_flat = 60 < abs(pitch) < 90
 
-            # Camera frame position
+            # Camera frame position (Optical: X=Right, Y=Down, Z=Forward)
             X = tvec[0][0]
             Y = tvec[0][1]
             Z = tvec[0][2]
 
             aruco_data = {
                 "id": int(marker_id),
-                "position": (Z, -X, -Y),
+                "position_optical": (X, Y, Z),
                 "yaw": yaw_deg,
                 "is_flat": is_flat
             }
@@ -359,62 +374,70 @@ class ArucoTF(Node):
             self.publish_aruco_tf(aruco_data)
             self.republish_aruco_in_base(aruco_data)
 
-    # ---------------------------------------------------------
-    # ---------------- TF PUBLISHERS --------------------------
-    # ---------------------------------------------------------
     def publish_aruco_tf(self, aruco_info):
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = "camera_link"
         t.child_frame_id = f"camera_{aruco_info['id']}"
 
-        t.transform.translation.x = aruco_info["position"][0]
-        t.transform.translation.y = aruco_info["position"][1]
-        t.transform.translation.z = aruco_info["position"][2]
+        X, Y, Z = aruco_info["position_optical"]
 
-        # Use REAL yaw
+        # Optical -> ROS Frame
+        t.transform.translation.x = Z
+        t.transform.translation.y = -X
+        t.transform.translation.z = -Y
+
         q = quaternion_from_euler(0.0, 0.0, np.radians(aruco_info["yaw"]))
-        t.transform.rotation.x = q[0]
-        t.transform.rotation.y = q[1]
-        t.transform.rotation.z = q[2]
-        t.transform.rotation.w = q[3]
-
+        t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = q
+        
         self.tf_broadcaster.sendTransform(t)
 
+    # --- FIXED INDENTATION HERE ---
     def republish_aruco_in_base(self, aruco_info, teamid='1425'):
         try:
-            trans = self.tf_buffer.lookup_transform(
-                "base_link",
-                f"camera_{aruco_info['id']}",
-                rclpy.time.Time(),
-                timeout=Duration(seconds=0.5)
-            )
+            # Create Point in Camera Frame
+            p = PointStamped()
+            p.header.frame_id = "camera_link"
+            p.header.stamp = rclpy.time.Time().to_msg()
+            
+            X, Y, Z = aruco_info["position_optical"]
+            p.point.x = Z
+            p.point.y = -X
+            p.point.z = -Y
 
+            # Transform to Base
+            if not self.tf_buffer.can_transform("base_link", "camera_link", rclpy.time.Time()):
+                return
+                
+            p_base = self.tf_buffer.transform(p, "base_link")
+
+            # Publish
             t = TransformStamped()
             t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = "base_link"
-            t.child_frame_id = f"{teamid}_fertilizer_1"
+            
+            if aruco_info['id'] == 3:
+                t.child_frame_id = f"{teamid}_fertilizer_1"
+            else:
+                t.child_frame_id = f"{teamid}_bot"
 
-            t.transform.translation.x = trans.transform.translation.x - 0.05
-            t.transform.translation.y = trans.transform.translation.y + 0
-            t.transform.translation.z = trans.transform.translation.z + 0.05
+            # Apply offsets
+            t.transform.translation.x = p_base.point.x - 0.0
+            t.transform.translation.y = p_base.point.y + 0.0
+            t.transform.translation.z = p_base.point.z + 0.0
 
-            # Fixed orientation for UR5 grasp (as per eYRC)
+            # Orientation
             if aruco_info['is_flat']:
                 qx, qy, qz, qw = quaternion_from_euler(1.571, 3.14, 0.0) 
             else:
                 qx, qy, qz, qw = quaternion_from_euler(3.14, 0.0, -1.57)
-            t.transform.rotation.x = qx
-            t.transform.rotation.y = qy
-            t.transform.rotation.z = qz
-            t.transform.rotation.w = qw
-
+            
+            t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = (qx, qy, qz, qw)
+            
             self.tf_broadcaster.sendTransform(t)
 
         except Exception as e:
-            self.get_logger().warn(
-                f"TF lookup failed for ArUco {aruco_info['id']}: {e}"
-            )
+            self.get_logger().warn(f"TF Base Aruco failed: {e}")
 
 
 # =========================================================
@@ -429,7 +452,6 @@ def main(args=None):
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(aruco_node)
     executor.add_node(detection_node)
-
 
     try:
         executor.spin()
