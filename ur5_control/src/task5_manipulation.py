@@ -72,6 +72,7 @@ class HybridArmControl(Node):
 
     def force_cb(self, msg):
         self.current_force_z = msg.data
+        self.get_logger().info(f'LIVE FORCE Z: {self.current_force_z:.3f}', throttle_duration_sec=0.1)
 
     def tcp_cb(self, msg):
         self.current_tcp_pos = np.array(msg.data[:3])
@@ -276,7 +277,7 @@ class HybridArmControl(Node):
             error = target_pos - self.current_tcp_pos
             distance = np.linalg.norm(error)
 
-            if distance < 0.01:
+            if distance < 0.03:
                 return True
             
             vel = np.clip(error * 1.0, -0.1, 0.1)
