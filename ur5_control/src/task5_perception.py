@@ -51,7 +51,7 @@ class Detection(Node):
         # Subscribers
         self.rgb_sub = self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
         self.depth_sub = self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
-        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera_info', self.camera_info_callback, 10)
+        self.caminfo_sub = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, 10)
 
         # Tracking State
         self.tracked_fruits = {}   
